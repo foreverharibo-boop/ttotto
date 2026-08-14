@@ -12,6 +12,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
+const EXTENSION_VERSION = '1.0.2';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -38,6 +39,11 @@ let analysisTimer = null;
 let smartTimer = null;
 let smartRunning = false;
 let smartAbortController = null;
+let smartForcePending = false;
+let forceSmartOnNextAnalysis = false;
+let runtimeActive = true;
+let eventsRegistered = false;
+const registeredEventHandlers = [];
 
 function getContext() {
     return SillyTavern.getContext();
@@ -63,16 +69,19 @@ function saveSettings() {
 
 function createDefaultChatState() {
     return {
-        version: 1,
+        version: 2,
         enabled: true,
         ignoredKeys: [],
+        ignoredPatterns: [],
         smart: {
             fingerprint: '',
             messageKeys: [],
             patterns: [],
             lastAssistantCount: 0,
+            lastAssistantTotal: 0,
             lastRunAt: 0,
             error: '',
+            stale: false,
         },
     };
 }
@@ -85,8 +94,10 @@ function getChatState(create = true) {
     if (!metadata[CHAT_STATE_KEY] && create) metadata[CHAT_STATE_KEY] = createDefaultChatState();
     const state = metadata[CHAT_STATE_KEY];
     if (!state || typeof state !== 'object') return null;
+    state.version = 2;
     state.enabled ??= true;
     state.ignoredKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys : [];
+    state.ignoredPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns : [];
     state.smart = {
         ...createDefaultChatState().smart,
         ...(state.smart && typeof state.smart === 'object' ? state.smart : {}),
@@ -103,6 +114,13 @@ function saveChatState() {
     } else if (typeof context.saveMetadata === 'function') {
         void context.saveMetadata();
     }
+}
+
+function getChatIdentity(context = getContext()) {
+    if (context.groupId !== undefined && context.groupId !== null && context.groupId !== '') {
+        return `group:${context.groupId}:chat:${context.chatId ?? ''}`;
+    }
+    return `character:${context.characterId ?? ''}:chat:${context.chatId ?? ''}`;
 }
 
 function readNestedString(value, path) {
@@ -161,7 +179,7 @@ function messageKey(message, index, text) {
     return `${stableId}:${Number(message?.swipe_id) || 0}:${fingerprintMessages([{ id: stableId, speaker: message?.name ?? '', text }])}`;
 }
 
-function collectAssistantMessages() {
+function collectAssistantMessages({ applyWindow = true } = {}) {
     const context = getContext();
     const settings = getSettings();
     const chat = Array.isArray(context.chat) ? context.chat : [];
@@ -177,7 +195,71 @@ function collectAssistantMessages() {
         candidates.push({ id: key, key, speaker, text, chatIndex: index });
     });
 
+    if (!applyWindow) return candidates;
     return candidates.slice(-Math.max(5, Number(settings.windowSize) || DEFAULT_SETTINGS.windowSize));
+}
+
+function countAssistantMessages() {
+    const context = getContext();
+    const chat = Array.isArray(context.chat) ? context.chat : [];
+    let count = 0;
+    for (const message of chat) {
+        if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') continue;
+        if (message.extra?.type === 'narrator' || message.extra?.type === 'system') continue;
+        if (message.mes.trim().length >= 8) count += 1;
+    }
+    return count;
+}
+
+export function shouldRunSmartAnalysis(total, lastTotal, interval, force = false) {
+    const current = Math.max(0, Number(total) || 0);
+    const previous = Math.max(0, Number(lastTotal) || 0);
+    const step = Math.max(1, Number(interval) || DEFAULT_SETTINGS.smartInterval);
+    return Boolean(force || current < previous || current - previous >= step);
+}
+
+function normalizedPatternTokens(value) {
+    return new Set(String(value ?? '')
+        .normalize('NFKC')
+        .toLocaleLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? []);
+}
+
+function tokenSimilarity(left, right) {
+    const a = normalizedPatternTokens(left);
+    const b = normalizedPatternTokens(right);
+    if (!a.size || !b.size) return 0;
+    const overlap = [...a].filter((token) => b.has(token)).length;
+    return overlap / Math.min(a.size, b.size);
+}
+
+function ignoredDescriptor(pattern) {
+    return {
+        key: String(pattern.key ?? ''),
+        source: String(pattern.source ?? ''),
+        kind: String(pattern.kind ?? ''),
+        scope: String(pattern.scope ?? ''),
+        speaker: String(pattern.speaker ?? ''),
+        label: String(pattern.label ?? ''),
+        instruction: String(pattern.instruction ?? ''),
+        examples: Array.isArray(pattern.examples) ? pattern.examples.slice(0, 3).map(String) : [String(pattern.example ?? '')].filter(Boolean),
+    };
+}
+
+function isPatternIgnored(pattern, state) {
+    if (state?.ignoredKeys?.includes(pattern.key)) return true;
+    for (const ignored of state?.ignoredPatterns ?? []) {
+        if (ignored?.key === pattern.key) return true;
+        if (ignored?.scope !== pattern.scope || String(ignored?.speaker ?? '') !== String(pattern.speaker ?? '')) continue;
+        if (pattern.source !== 'smart' && ignored?.source !== 'smart') continue;
+        const labelSimilarity = tokenSimilarity(ignored?.label, pattern.label);
+        if (labelSimilarity >= 0.72) return true;
+        if (labelSimilarity >= 0.4 && tokenSimilarity(ignored?.instruction, pattern.instruction) >= 0.82) return true;
+        const previousExamples = Array.isArray(ignored?.examples) ? ignored.examples : [];
+        const currentExamples = Array.isArray(pattern.examples) ? pattern.examples : [pattern.example].filter(Boolean);
+        if (previousExamples.some((a) => currentExamples.some((b) => tokenSimilarity(a, b) >= 0.72))) return true;
+    }
+    return false;
 }
 
 function getContextNames() {
@@ -197,7 +279,7 @@ function getContextNames() {
 
 function smartPatternsForMessages(state, messages) {
     const settings = getSettings();
-    if (!settings.smartAnalysis || !state?.smart?.patterns?.length) return [];
+    if (!settings.smartAnalysis || state?.smart?.stale || !state?.smart?.patterns?.length) return [];
     const savedKeys = state.smart.messageKeys ?? [];
     if (!savedKeys.length) return [];
     const current = new Set(messages.map((message) => message.key));
@@ -205,7 +287,8 @@ function smartPatternsForMessages(state, messages) {
     if (matched / savedKeys.length < 0.7) return [];
     return state.smart.patterns
         .map((pattern, index) => normalizeSmartPattern(pattern, index))
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((pattern) => pattern.scope === 'dialogue' ? settings.dialogueEnabled : settings.narrationEnabled);
 }
 
 function analyzeCurrentChat(force = false) {
@@ -219,13 +302,17 @@ function analyzeCurrentChat(force = false) {
         settings.dialogueEnabled,
         settings.sourceMode,
     ].join('|');
-    const fingerprint = `${fingerprintMessages(messages)}|${settingsKey}|${state?.ignoredKeys?.join(',') ?? ''}|${state?.smart?.lastRunAt ?? 0}`;
+    const ignoredFingerprint = fingerprintMessages((state?.ignoredPatterns ?? []).map((pattern, index) => ({
+        id: index,
+        speaker: pattern.speaker ?? '',
+        text: `${pattern.key ?? ''}|${pattern.label ?? ''}|${pattern.instruction ?? ''}`,
+    })));
+    const fingerprint = `${fingerprintMessages(messages)}|${settingsKey}|${state?.ignoredKeys?.join(',') ?? ''}|${ignoredFingerprint}|${state?.smart?.lastRunAt ?? 0}|${state?.smart?.stale ? 1 : 0}`;
     if (!force && analysisCache?.fingerprint === fingerprint) return analysisCache;
 
     const localPatterns = detectPatterns(messages, settings, getContextNames());
     const smartPatterns = smartPatternsForMessages(state, messages);
-    const ignored = new Set(state?.ignoredKeys ?? []);
-    const patterns = mergePatterns(localPatterns, smartPatterns).filter((pattern) => !ignored.has(pattern.key));
+    const patterns = mergePatterns(localPatterns, smartPatterns).filter((pattern) => !isPatternIgnored(pattern, state));
     const prompt = buildInjection(patterns, Number(settings.maxInjectedPatterns) || DEFAULT_SETTINGS.maxInjectedPatterns);
 
     analysisCache = {
@@ -263,7 +350,7 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
     try {
         const settings = getSettings();
         const state = getChatState(false);
-        if (!settings.enabled || !state?.enabled || smartRunning) return;
+        if (!runtimeActive || !settings.enabled || !state?.enabled) return;
         if (!ALLOWED_GENERATION_TYPES.has(String(type ?? '').toLocaleLowerCase())) return;
         const analysis = analyzeCurrentChat(true);
         if (!analysis.prompt) return;
@@ -344,19 +431,22 @@ async function requestSmartAnalysis(messages, signal) {
         prompt,
         responseLength: maxTokens,
         trimNames: false,
+        signal,
     });
 }
 
 async function runSmartAnalysis({ manual = false } = {}) {
     const settings = getSettings();
     const state = getChatState();
-    if (!state || smartRunning) return false;
+    if (!runtimeActive || !state || smartRunning) return false;
     if (!settings.smartAnalysis) {
         if (manual) toastr.info('설정에서 AI 정밀 분석을 먼저 켜주세요.', '🌀또또');
         return false;
     }
 
     const messages = collectAssistantMessages();
+    const assistantTotal = countAssistantMessages();
+    const chatIdentity = getChatIdentity();
     if (messages.length < 3) {
         if (manual) toastr.info('정밀 분석에는 AI 답변이 최소 3개 필요해요.', '🌀또또');
         return false;
@@ -369,14 +459,21 @@ async function runSmartAnalysis({ manual = false } = {}) {
 
     try {
         const response = await requestSmartAnalysis(messages, smartAbortController.signal);
+        if (!runtimeActive || chatIdentity !== getChatIdentity()) {
+            const aborted = new Error('채팅이 변경되어 정밀 분석 결과를 폐기했습니다.');
+            aborted.name = 'AbortError';
+            throw aborted;
+        }
         const patterns = parseSmartResponse(response);
         state.smart = {
             fingerprint: fingerprintMessages(messages),
             messageKeys: messages.map((message) => message.key),
             patterns,
             lastAssistantCount: messages.length,
+            lastAssistantTotal: assistantTotal,
             lastRunAt: Date.now(),
             error: '',
+            stale: false,
         };
         saveChatState();
         invalidateAnalysis();
@@ -393,31 +490,50 @@ async function runSmartAnalysis({ manual = false } = {}) {
     } finally {
         smartRunning = false;
         smartAbortController = null;
-        updateUi();
+        if (runtimeActive) updateUi();
     }
 }
 
-function scheduleSmartAnalysis() {
+function scheduleSmartAnalysis({ force = false } = {}) {
+    smartForcePending ||= force;
     clearTimeout(smartTimer);
     smartTimer = setTimeout(() => {
+        const forceNow = smartForcePending;
+        smartForcePending = false;
         const settings = getSettings();
         const state = getChatState(false);
-        if (!settings.enabled || !settings.smartAnalysis || !state?.enabled || smartRunning) return;
-        const count = collectAssistantMessages().length;
-        const lastCount = Number(state.smart?.lastAssistantCount) || 0;
-        if (count - lastCount >= Number(settings.smartInterval || 3)) {
+        if (!runtimeActive || !settings.enabled || !settings.smartAnalysis || !state?.enabled) return;
+        if (smartRunning) {
+            scheduleSmartAnalysis({ force: forceNow });
+            return;
+        }
+        const total = countAssistantMessages();
+        const lastTotal = Number(state.smart?.lastAssistantTotal) || 0;
+        if (shouldRunSmartAnalysis(total, lastTotal, settings.smartInterval, forceNow)) {
             void runSmartAnalysis({ manual: false });
         }
     }, 900);
 }
 
-function scheduleAnalysis({ smart = false, delay = 250 } = {}) {
+function markSmartResultsStale() {
+    const state = getChatState(false);
+    if (!state?.smart) return;
+    state.smart.stale = true;
+    state.smart.error = '';
+    saveChatState();
+}
+
+function scheduleAnalysis({ smart = false, forceSmart = false, delay = 250 } = {}) {
+    forceSmartOnNextAnalysis ||= forceSmart;
     clearTimeout(analysisTimer);
     analysisTimer = setTimeout(() => {
+        if (!runtimeActive) return;
+        const forceSmartNow = forceSmartOnNextAnalysis;
+        forceSmartOnNextAnalysis = false;
         invalidateAnalysis();
         analyzeCurrentChat(true);
         updateUi();
-        if (smart) scheduleSmartAnalysis();
+        if (smart) scheduleSmartAnalysis({ force: forceSmartNow });
     }, delay);
 }
 
@@ -491,6 +607,10 @@ function ignorePattern(pattern) {
     if (!state) return;
     if (!state.ignoredKeys.includes(pattern.key)) state.ignoredKeys.push(pattern.key);
     state.ignoredKeys = state.ignoredKeys.slice(-200);
+    if (!state.ignoredPatterns.some((ignored) => ignored?.key === pattern.key)) {
+        state.ignoredPatterns.push(ignoredDescriptor(pattern));
+    }
+    state.ignoredPatterns = state.ignoredPatterns.slice(-200);
     saveChatState();
     invalidateAnalysis();
     analyzeCurrentChat(true);
@@ -592,10 +712,24 @@ function bindSetting(id, key, parser = (value) => value) {
     const element = document.getElementById(id);
     element.addEventListener('change', () => {
         const value = element.type === 'checkbox' ? element.checked : element.value;
-        getSettings()[key] = parser(value);
+        const settings = getSettings();
+        settings[key] = parser(value);
         saveSettings();
+        if (key === 'windowSize' || key === 'sourceMode') markSmartResultsStale();
+        if (key === 'smartAnalysis') {
+            if (settings.smartAnalysis) {
+                scheduleSmartAnalysis({ force: true });
+            } else {
+                clearTimeout(smartTimer);
+                smartForcePending = false;
+                forceSmartOnNextAnalysis = false;
+                smartAbortController?.abort();
+            }
+        } else if ((key === 'windowSize' || key === 'sourceMode') && settings.smartAnalysis) {
+            scheduleSmartAnalysis({ force: true });
+        }
         invalidateAnalysis();
-        if (!getSettings().enabled) clearInjectedPrompt();
+        if (!settings.enabled) clearInjectedPrompt();
         analyzeCurrentChat(true);
         updateUi();
     });
@@ -655,6 +789,7 @@ function bindUi() {
         const state = getChatState();
         if (!state) return;
         state.ignoredKeys = [];
+        state.ignoredPatterns = [];
         saveChatState();
         invalidateAnalysis();
         updateUi();
@@ -691,19 +826,32 @@ async function initializeUi() {
 }
 
 function registerEvents() {
+    if (eventsRegistered) return;
     const context = getContext();
     const events = getEventTypes(context);
     const listen = (eventName, handler) => {
         const event = events[eventName];
-        if (event) context.eventSource.on(event, handler);
+        if (!event) return;
+        context.eventSource.on(event, handler);
+        registeredEventHandlers.push({ event, handler });
     };
 
     listen('MESSAGE_RECEIVED', () => scheduleAnalysis({ smart: true, delay: 350 }));
     listen('CHARACTER_MESSAGE_RENDERED', () => scheduleAnalysis({ smart: true, delay: 650 }));
-    listen('MESSAGE_EDITED', () => scheduleAnalysis({ smart: false, delay: 200 }));
-    listen('MESSAGE_DELETED', () => scheduleAnalysis({ smart: false, delay: 200 }));
-    listen('MESSAGE_SWIPED', () => scheduleAnalysis({ smart: true, delay: 250 }));
+    const handleHistoryMutation = () => {
+        markSmartResultsStale();
+        scheduleAnalysis({ smart: true, forceSmart: true, delay: 250 });
+    };
+    listen('MESSAGE_EDITED', handleHistoryMutation);
+    listen('MESSAGE_DELETED', handleHistoryMutation);
+    listen('MESSAGE_SWIPED', handleHistoryMutation);
+    listen('GENERATION_ENDED', clearInjectedPrompt);
+    listen('GENERATION_STOPPED', clearInjectedPrompt);
     listen('CHAT_CHANGED', () => {
+        smartAbortController?.abort();
+        clearTimeout(smartTimer);
+        smartForcePending = false;
+        forceSmartOnNextAnalysis = false;
         clearInjectedPrompt();
         invalidateAnalysis();
         populateProfiles();
@@ -711,23 +859,41 @@ function registerEvents() {
     });
     listen('CHAT_CREATED', () => scheduleAnalysis({ smart: false, delay: 120 }));
     listen('CONNECTION_PROFILE_LOADED', populateProfiles);
+    eventsRegistered = true;
+}
+
+function unregisterEvents() {
+    if (!eventsRegistered) return;
+    const eventSource = getContext().eventSource;
+    for (const { event, handler } of registeredEventHandlers.splice(0)) {
+        if (typeof eventSource.removeListener === 'function') eventSource.removeListener(event, handler);
+        else if (typeof eventSource.off === 'function') eventSource.off(event, handler);
+    }
+    eventsRegistered = false;
 }
 
 async function initialize() {
+    runtimeActive = true;
     getSettings();
     registerEvents();
     await initializeUi();
-    console.log(`${LOG_PREFIX} v1.0.0 로드 완료`);
+    console.log(`${LOG_PREFIX} v${EXTENSION_VERSION} 로드 완료`);
 }
 
 export function onEnable() {
+    runtimeActive = true;
+    registerEvents();
     scheduleAnalysis({ smart: false, delay: 50 });
 }
 
 export function onDisable() {
+    runtimeActive = false;
     clearTimeout(analysisTimer);
     clearTimeout(smartTimer);
+    smartForcePending = false;
+    forceSmartOnNextAnalysis = false;
     smartAbortController?.abort();
+    unregisterEvents();
     clearInjectedPrompt();
 }
 
@@ -745,10 +911,13 @@ export function onClean() {
 const context = getContext();
 const events = getEventTypes(context);
 if (events.APP_READY) {
-    context.eventSource.on(events.APP_READY, () => void initialize().catch((error) => {
-        console.error(`${LOG_PREFIX} 초기화 실패`, error);
-        toastr.error(`초기화 실패: ${error?.message ?? error}`, '🌀또또');
-    }));
+    context.eventSource.on(events.APP_READY, () => {
+        if (!runtimeActive) return;
+        void initialize().catch((error) => {
+            console.error(`${LOG_PREFIX} 초기화 실패`, error);
+            toastr.error(`초기화 실패: ${error?.message ?? error}`, '🌀또또');
+        });
+    });
 } else {
     void initialize().catch((error) => console.error(`${LOG_PREFIX} 초기화 실패`, error));
 }

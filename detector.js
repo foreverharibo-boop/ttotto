@@ -116,11 +116,12 @@ function stripBalancedHtmlBlocksByClass(text, tagName, className) {
 }
 
 function stripNonProse(text) {
-    let clean = clipMessage(text)
+    let clean = String(text ?? '')
         // User info panels can exist either before regex rendering or as a rendered HTML card.
         .replace(/<info[_-]?panel\b[^>]*>[\s\S]*?<\/info[_-]?panel\s*>/gi, ' ')
         .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ');
     clean = stripBalancedHtmlBlocksByClass(clean, 'div', 'info-card');
+    clean = clipMessage(clean);
 
     return clean
         .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
@@ -559,10 +560,19 @@ export function detectPatterns(messages, settings, contextNames = []) {
 export function normalizeSmartPattern(raw, index = 0) {
     if (!raw || typeof raw !== 'object') return null;
     const scope = raw.scope === 'dialogue' ? 'dialogue' : 'narration';
-    const label = String(raw.label ?? '').trim().slice(0, 100);
-    const instruction = String(raw.instruction ?? raw.abstract_pattern ?? '').trim().slice(0, 500);
+    const cleanSmartText = (value, limit) => String(value ?? '')
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\b(?:system|assistant|user)\s*:/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, limit);
+    const label = cleanSmartText(raw.label, 100);
+    const instruction = cleanSmartText(raw.instruction ?? raw.abstract_pattern, 500);
+    if (/\b(?:ignore|override|disregard)\b.{0,40}\b(?:instruction|prompt|rule)s?\b/i.test(instruction)
+        || /\b(?:reveal|print|repeat)\b.{0,40}\b(?:system prompt|hidden instruction)s?\b/i.test(instruction)) return null;
     const examples = Array.isArray(raw.examples)
-        ? raw.examples.map((value) => String(value).trim().slice(0, 220)).filter(Boolean).slice(0, 3)
+        ? raw.examples.map((value) => cleanSmartText(value, 220)).filter(Boolean).slice(0, 3)
         : [];
     if (!label || !instruction) return null;
     const speaker = scope === 'dialogue' ? String(raw.speaker ?? 'Character').trim().slice(0, 80) : '';
