@@ -1,0 +1,228 @@
+#ttotto-settings {
+  --ttotto-gap: 10px;
+  margin: 8px 0;
+}
+
+#ttotto-settings .ttotto-drawer-header,
+#ttotto-settings .ttotto-heading,
+#ttotto-settings .ttotto-header-actions,
+#ttotto-settings .ttotto-section-head,
+#ttotto-settings .ttotto-setting-row,
+#ttotto-settings .ttotto-pattern-head,
+#ttotto-settings .ttotto-pattern-actions,
+#ttotto-settings .ttotto-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ttotto-gap);
+}
+
+#ttotto-settings .ttotto-heading {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+#ttotto-settings .ttotto-heading > span {
+  font-size: 1.3em;
+}
+
+#ttotto-settings .ttotto-heading small,
+#ttotto-settings .ttotto-setting-row small,
+#ttotto-settings .ttotto-section-head small,
+#ttotto-settings .ttotto-pattern-example,
+#ttotto-settings .ttotto-pattern-meta,
+#ttotto-settings .ttotto-save-note {
+  display: block;
+  opacity: 0.72;
+  font-size: 0.88em;
+  line-height: 1.35;
+}
+
+#ttotto-settings .ttotto-master-label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+#ttotto-settings .ttotto-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+#ttotto-settings .ttotto-tab {
+  width: 100%;
+  margin: 0;
+}
+
+#ttotto-settings .ttotto-tab.is-active {
+  filter: brightness(1.15);
+  box-shadow: inset 0 -2px 0 var(--SmartThemeQuoteColor, currentColor);
+}
+
+#ttotto-settings .ttotto-count,
+#ttotto-settings .ttotto-scope-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.7em;
+  min-height: 1.7em;
+  padding: 0 0.48em;
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  border-radius: 999px;
+  font-size: 0.82em;
+  line-height: 1;
+}
+
+#ttotto-settings .ttotto-panel {
+  padding: 2px 0 8px;
+}
+
+#ttotto-settings .ttotto-section-head {
+  margin: 8px 0;
+}
+
+#ttotto-settings .ttotto-section-head > div {
+  min-width: 0;
+}
+
+#ttotto-settings .ttotto-pattern-list {
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+#ttotto-settings .ttotto-pattern {
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+#ttotto-settings .ttotto-pattern.is-ignored {
+  opacity: 0.55;
+}
+
+#ttotto-settings .ttotto-pattern-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-pattern-name {
+  font-weight: 600;
+}
+
+#ttotto-settings .ttotto-pattern-example {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-pattern-meta {
+  margin-top: 5px;
+}
+
+#ttotto-settings .ttotto-pattern-actions {
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+#ttotto-settings .ttotto-pattern-actions .menu_button,
+#ttotto-settings .ttotto-button-row .menu_button,
+#ttotto-settings .ttotto-section-head .menu_button {
+  width: auto;
+  margin: 0;
+}
+
+#ttotto-settings .ttotto-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 86px;
+  opacity: 0.72;
+  text-align: center;
+}
+
+#ttotto-settings .ttotto-empty > span:first-child {
+  font-size: 1.35em;
+}
+
+#ttotto-settings .ttotto-prompt-preview {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+#ttotto-settings .ttotto-prompt-preview pre {
+  max-height: 230px;
+  margin: 8px 0 0;
+  padding: 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 72%, transparent);
+  font-family: inherit;
+  font-size: 0.88em;
+}
+
+#ttotto-settings .ttotto-smart-status {
+  margin: 8px 0;
+  padding: 7px 9px;
+  border-left: 3px solid var(--SmartThemeQuoteColor, currentColor);
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 66%, transparent);
+  font-size: 0.9em;
+}
+
+#ttotto-settings .ttotto-setting-row,
+#ttotto-settings .ttotto-field {
+  min-height: 50px;
+  padding: 9px 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+}
+
+#ttotto-settings .ttotto-setting-row > span {
+  min-width: 0;
+}
+
+#ttotto-settings .ttotto-setting-row > input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+
+#ttotto-settings .ttotto-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 46%);
+  align-items: center;
+  gap: 10px;
+}
+
+#ttotto-settings .ttotto-field .text_pole {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+#ttotto-settings .ttotto-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+#ttotto-settings .ttotto-save-note {
+  margin-top: 9px;
+  text-align: center;
+}
+
+#ttotto-settings [hidden] {
+  display: none !important;
+}
+
+@media (max-width: 520px) {
+  #ttotto-settings .ttotto-field {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  #ttotto-settings .ttotto-pattern-actions {
+    flex-wrap: wrap;
+  }
+}
