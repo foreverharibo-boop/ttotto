@@ -65,8 +65,64 @@ function clipMessage(text) {
     return `${value.slice(0, half)}\n…\n${value.slice(-half)}`;
 }
 
+function hasHtmlClass(tag, className) {
+    const match = String(tag).match(/\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const classes = String(match?.[1] ?? match?.[2] ?? match?.[3] ?? '')
+        .split(/\s+/)
+        .filter(Boolean);
+    return classes.some((value) => value.toLocaleLowerCase() === className.toLocaleLowerCase());
+}
+
+function stripBalancedHtmlBlocksByClass(text, tagName, className) {
+    let output = String(text ?? '');
+    const tagPattern = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi');
+
+    while (true) {
+        tagPattern.lastIndex = 0;
+        let opening = null;
+        let match;
+
+        while ((match = tagPattern.exec(output)) !== null) {
+            const tag = match[0];
+            if (!/^<\//.test(tag) && hasHtmlClass(tag, className)) {
+                opening = { index: match.index, end: tagPattern.lastIndex };
+                break;
+            }
+        }
+
+        if (!opening) break;
+
+        let depth = 1;
+        let closingEnd = output.length;
+        tagPattern.lastIndex = opening.end;
+
+        while ((match = tagPattern.exec(output)) !== null) {
+            const tag = match[0];
+            if (/^<\//.test(tag)) {
+                depth -= 1;
+            } else if (!/\/\s*>$/.test(tag)) {
+                depth += 1;
+            }
+            if (depth === 0) {
+                closingEnd = tagPattern.lastIndex;
+                break;
+            }
+        }
+
+        output = `${output.slice(0, opening.index)} ${output.slice(closingEnd)}`;
+    }
+
+    return output;
+}
+
 function stripNonProse(text) {
-    return clipMessage(text)
+    let clean = clipMessage(text)
+        // User info panels can exist either before regex rendering or as a rendered HTML card.
+        .replace(/<info[_-]?panel\b[^>]*>[\s\S]*?<\/info[_-]?panel\s*>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ');
+    clean = stripBalancedHtmlBlocksByClass(clean, 'div', 'info-card');
+
+    return clean
         .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
         .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, ' ')
         .replace(/```[\s\S]*?```/g, ' ')

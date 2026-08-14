@@ -18,6 +18,32 @@ test('대사와 서술을 분리한다', () => {
     assert.equal(parts.narration.length, 2);
 });
 
+test('원본 Info_panel 블록 전체를 분석에서 제외한다', () => {
+    const text = `Before the panel.\n<Info_panel>\n[Date: 2026.11.23. (Mon) | 10:35 AM]\n[Weather: Partly Cloudy | 2°C]\n[Location: Master Bedroom]\n</Info_panel>\n"Stay here," Peter said.`;
+    const parts = splitDialogueAndNarration(text);
+    const combined = [...parts.narration, ...parts.dialogue].join(' ');
+    assert.doesNotMatch(combined, /Date|Weather|Location|Master Bedroom/);
+    assert.match(combined, /Before the panel/);
+    assert.match(combined, /Stay here/);
+});
+
+test('정규식으로 렌더링된 style 및 중첩 info-card 블록을 분석에서 제외한다', () => {
+    const text = `<style>\n.info-card{background:#fff}.body{line-height:1.3}\n</style>\n<div class="info-card extra">\n<div class="info-row"><div class="icon">📅</div><div class="body">2026.11.23. (Mon) | 10:35 AM</div></div>\n<div class="info-row"><div class="icon">📍</div><div class="body">Master Bedroom, Queens</div></div>\n</div>\nHe closed the door.`;
+    const parts = splitDialogueAndNarration(text);
+    const combined = [...parts.narration, ...parts.dialogue].join(' ');
+    assert.doesNotMatch(combined, /info-card|line-height|2026\.11\.23|Master Bedroom|Queens/);
+    assert.match(combined, /He closed the door/);
+});
+
+test('반복되는 인포블럭만으로 반복 패턴을 만들지 않는다', () => {
+    const messages = [1, 2, 3, 4].map((number) => ({
+        id: String(number),
+        speaker: 'Peter',
+        text: `<Info_panel>[Date: 2026.11.${20 + number}. | 10:35 AM]\n[Weather: Cloudy | 2°C]\n[Location: Master Bedroom]</Info_panel>`,
+    }));
+    assert.deepEqual(detectPatterns(messages, settings, ['Peter']), []);
+});
+
 test('서로 다른 답변의 반복 서술 습관을 감지한다', () => {
     const messages = [
         { id: '1', speaker: 'Peter', text: 'His jaw tightened as he looked away from her.' },
