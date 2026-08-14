@@ -115,12 +115,32 @@ function stripBalancedHtmlBlocksByClass(text, tagName, className) {
     return output;
 }
 
-function stripNonProse(text) {
+function parseExclusionList(value, kind) {
+    const source = Array.isArray(value) ? value : String(value ?? '').split(/[\s,]+/);
+    const pattern = kind === 'tag'
+        ? /^[A-Za-z][A-Za-z0-9_-]{0,39}$/
+        : /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+    return [...new Set(source
+        .map((item) => String(item).trim().replace(kind === 'class' ? /^\./ : /^$/, ''))
+        .filter((item) => pattern.test(item))
+        .map((item) => item.toLocaleLowerCase()))].slice(0, 30);
+}
+
+function stripNonProse(text, exclusions = {}) {
     let clean = String(text ?? '')
         // User info panels can exist either before regex rendering or as a rendered HTML card.
         .replace(/<info[_-]?panel\b[^>]*>[\s\S]*?<\/info[_-]?panel\s*>/gi, ' ')
         .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ');
     clean = stripBalancedHtmlBlocksByClass(clean, 'div', 'info-card');
+    for (const tagName of parseExclusionList(exclusions.excludedTags, 'tag')) {
+        const block = new RegExp(`<${tagName}\\b[^>]*>[\\s\\S]*?<\\/${tagName}\\s*>`, 'gi');
+        clean = clean.replace(block, ' ');
+    }
+    for (const className of parseExclusionList(exclusions.excludedClasses, 'class')) {
+        for (const tagName of ['div', 'section', 'aside', 'article', 'table', 'span']) {
+            clean = stripBalancedHtmlBlocksByClass(clean, tagName, className);
+        }
+    }
     clean = clipMessage(clean);
 
     return clean
@@ -133,8 +153,8 @@ function stripNonProse(text) {
         .trim();
 }
 
-export function splitDialogueAndNarration(text) {
-    const clean = stripNonProse(text);
+export function splitDialogueAndNarration(text, exclusions = {}) {
+    const clean = stripNonProse(text, exclusions);
     const dialogue = [];
     const narration = [];
     const regex = /"([^"\n]{2,})"|“([^”\n]{2,})”|‘([^’\n]{2,})’|「([^」\n]{2,})」|『([^』\n]{2,})』/g;
@@ -276,18 +296,19 @@ function stableHash(value) {
     return (hash >>> 0).toString(36);
 }
 
-function scopeKey(scope, speaker) {
-    return scope === 'dialogue' ? `${scope}:${speaker || 'character'}` : scope;
+function scopeKey(scope, speaker, characterUuid) {
+    return `${scope}:${characterUuid || 'unknown'}:${scope === 'dialogue' ? speaker || 'character' : 'narration'}`;
 }
 
 function makePattern(kind, scope, speaker, key, entry, label, instruction, extraScore = 0) {
     const messageCount = entry.messageIds.size;
     return {
-        id: `local-${stableHash(`${kind}|${scope}|${speaker}|${key}`)}`,
-        key: `${kind}|${scope}|${speaker}|${key}`,
+        id: `local-${stableHash(`${kind}|${scope}|${entry.characterUuid}|${speaker}|${key}`)}`,
+        key: `${kind}|${scope}|${entry.characterUuid}|${speaker}|${key}`,
         source: 'local',
         kind,
         scope,
+        characterUuid: String(entry.characterUuid ?? ''),
         speaker: scope === 'dialogue' ? speaker : '',
         label,
         example: entry.examples[0] ?? '',
@@ -314,10 +335,12 @@ function collectEntries(messages, settings, names) {
     const config = SENSITIVITY[settings.sensitivity] ?? SENSITIVITY.normal;
 
     for (const message of messages) {
-        const { dialogue, narration } = splitDialogueAndNarration(message.text);
+        const { dialogue, narration } = splitDialogueAndNarration(message.text, settings);
         const groups = [];
-        if (settings.narrationEnabled) groups.push({ scope: 'narration', parts: narration, speaker: '' });
-        if (settings.dialogueEnabled) groups.push({ scope: 'dialogue', parts: dialogue, speaker: message.speaker || 'Character' });
+        const characterUuid = String(message.characterUuid ?? '');
+        if (!characterUuid) continue;
+        if (settings.narrationEnabled) groups.push({ scope: 'narration', parts: narration, speaker: '', characterUuid });
+        if (settings.dialogueEnabled) groups.push({ scope: 'dialogue', parts: dialogue, speaker: message.speaker || 'Character', characterUuid });
 
         for (const group of groups) {
             const seenPhrases = new Set();
@@ -325,7 +348,7 @@ function collectEntries(messages, settings, names) {
             const seenEndings = new Set();
             const seenStructures = new Set();
             const seenHabits = new Set();
-            const scoped = scopeKey(group.scope, group.speaker);
+            const scoped = scopeKey(group.scope, group.speaker, group.characterUuid);
 
             for (const part of group.parts) {
                 for (const sentence of splitSentences(part)) {
@@ -347,6 +370,7 @@ function collectEntries(messages, settings, names) {
                             addOccurrence(phrases, key, {
                                 scope: group.scope,
                                 speaker: group.speaker,
+                                characterUuid: group.characterUuid,
                                 gram,
                                 size,
                                 messageId: message.id,
@@ -365,6 +389,7 @@ function collectEntries(messages, settings, names) {
                             addOccurrence(openings, key, {
                                 scope: group.scope,
                                 speaker: group.speaker,
+                                characterUuid: group.characterUuid,
                                 opening,
                                 messageId: message.id,
                                 example: sentence,
@@ -380,6 +405,7 @@ function collectEntries(messages, settings, names) {
                             addOccurrence(endings, endingKey, {
                                 scope: group.scope,
                                 speaker: group.speaker,
+                                characterUuid: group.characterUuid,
                                 ending,
                                 messageId: message.id,
                                 example: sentence,
@@ -395,6 +421,7 @@ function collectEntries(messages, settings, names) {
                             addOccurrence(structures, key, {
                                 scope: group.scope,
                                 speaker: group.speaker,
+                                characterUuid: group.characterUuid,
                                 fingerprint,
                                 messageId: message.id,
                                 example: sentence,
@@ -430,6 +457,7 @@ function collectEntries(messages, settings, names) {
                         addOccurrence(habits, key, {
                             scope: group.scope,
                             speaker: group.speaker,
+                            characterUuid: group.characterUuid,
                             habitKey,
                             habitLabel,
                             messageId: message.id,
@@ -460,7 +488,9 @@ function phrasePatterns(entries, settings) {
     const selected = [];
     for (const candidate of candidates) {
         const duplicate = selected.some((chosen) => {
-            if (chosen.scope !== candidate.scope || chosen.speaker !== candidate.speaker) return false;
+            if (chosen.characterUuid !== candidate.characterUuid
+                || chosen.scope !== candidate.scope
+                || chosen.speaker !== candidate.speaker) return false;
             const a = chosen.key.split('|').at(-1);
             const b = candidate.key.split('|').at(-1);
             return a.includes(b) || b.includes(a);
@@ -531,7 +561,9 @@ function deduplicatePatterns(patterns) {
     const selected = [];
     for (const pattern of patterns.sort((a, b) => b.score - a.score)) {
         const duplicate = selected.some((chosen) => {
-            if (chosen.scope !== pattern.scope || chosen.speaker !== pattern.speaker) return false;
+            if (chosen.characterUuid !== pattern.characterUuid
+                || chosen.scope !== pattern.scope
+                || chosen.speaker !== pattern.speaker) return false;
             if (chosen.kind === pattern.kind && chosen.label === pattern.label) return true;
             const examplesA = new Set(tokenize(chosen.example));
             const examplesB = new Set(tokenize(pattern.example));
@@ -576,15 +608,18 @@ export function normalizeSmartPattern(raw, index = 0) {
         : [];
     if (!label || !instruction) return null;
     const speaker = scope === 'dialogue' ? String(raw.speaker ?? 'Character').trim().slice(0, 80) : '';
+    const characterUuid = String(raw.characterUuid ?? raw.character_uuid ?? '').trim().slice(0, 100);
+    if (!characterUuid) return null;
     const count = Math.max(2, Math.min(99, Number(raw.count) || examples.length || 2));
     const confidence = Math.max(0, Math.min(1, Number(raw.confidence) || 0.72));
-    const key = `smart|${scope}|${speaker}|${label}|${instruction}`;
+    const key = `smart|${characterUuid}|${scope}|${speaker}|${label}|${instruction}`;
     return {
         id: `smart-${stableHash(key)}-${index}`,
         key,
         source: 'smart',
         kind: 'semantic',
         scope,
+        characterUuid,
         speaker,
         label,
         example: examples[0] ?? '',
@@ -602,15 +637,23 @@ export function mergePatterns(localPatterns, smartPatterns) {
 }
 
 export function buildInjection(patterns, maxPatterns = 6) {
-    const selected = patterns.filter((pattern) => pattern?.instruction).slice(0, Math.max(1, maxPatterns));
+    const valid = patterns.filter((pattern) => pattern?.instruction);
+    const permanent = valid.filter((pattern) => pattern.source === 'pinned').slice(0, 30);
+    const detected = valid.filter((pattern) => pattern.source !== 'pinned').slice(0, Math.max(1, maxPatterns));
+    const selected = [...permanent, ...detected];
     if (!selected.length) return '';
-    const narration = selected.filter((pattern) => pattern.scope === 'narration');
-    const dialogue = selected.filter((pattern) => pattern.scope === 'dialogue');
+    const narration = detected.filter((pattern) => pattern.scope === 'narration');
+    const dialogue = detected.filter((pattern) => pattern.scope === 'dialogue');
     const lines = [
         '<ttotto_anti_repetition>',
         'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
         'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
     ];
+
+    if (permanent.length) {
+        lines.push('Permanent character-specific bans (apply strictly in both narration and dialogue):');
+        permanent.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
+    }
 
     if (narration.length) {
         lines.push('Narration:');
@@ -626,6 +669,6 @@ export function buildInjection(patterns, maxPatterns = 6) {
 }
 
 export function fingerprintMessages(messages) {
-    const basis = messages.map((message) => `${message.id}:${message.speaker}:${message.text}`).join('\n---\n');
+    const basis = messages.map((message) => `${message.id}:${message.characterUuid ?? ''}:${message.speaker}:${message.text}`).join('\n---\n');
     return stableHash(basis);
 }

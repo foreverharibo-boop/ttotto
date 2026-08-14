@@ -12,7 +12,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.0.2';
+const EXTENSION_VERSION = '1.2.0';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -30,7 +30,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartProfileId: '',
     smartMaxTokens: 900,
     maxInjectedPatterns: 6,
-    sourceMode: 'auto',
+    sourceMode: 'original',
+    characterUuids: {},
+    characterAllowances: {},
+    characterBans: {},
+    characterHistory: {},
+    crossChatMemoryEnabled: false,
+    excludedTags: '',
+    excludedClasses: '',
 });
 
 let analysisCache = null;
@@ -60,7 +67,23 @@ function getSettings() {
         ...structuredClone(DEFAULT_SETTINGS),
         ...(current && typeof current === 'object' ? current : {}),
     };
-    return context.extensionSettings[MODULE_NAME];
+    const settings = context.extensionSettings[MODULE_NAME];
+    settings.sourceMode = 'original';
+    settings.characterUuids = settings.characterUuids && typeof settings.characterUuids === 'object'
+        ? settings.characterUuids
+        : {};
+    settings.characterAllowances = settings.characterAllowances && typeof settings.characterAllowances === 'object'
+        ? settings.characterAllowances
+        : {};
+    settings.characterBans = settings.characterBans && typeof settings.characterBans === 'object'
+        ? settings.characterBans
+        : {};
+    settings.characterHistory = settings.characterHistory && typeof settings.characterHistory === 'object'
+        ? settings.characterHistory
+        : {};
+    settings.excludedTags = String(settings.excludedTags ?? '');
+    settings.excludedClasses = String(settings.excludedClasses ?? '');
+    return settings;
 }
 
 function saveSettings() {
@@ -69,8 +92,10 @@ function saveSettings() {
 
 function createDefaultChatState() {
     return {
-        version: 2,
+        version: 4,
         enabled: true,
+        skipNextGeneration: false,
+        lastBanHits: [],
         ignoredKeys: [],
         ignoredPatterns: [],
         smart: {
@@ -94,8 +119,10 @@ function getChatState(create = true) {
     if (!metadata[CHAT_STATE_KEY] && create) metadata[CHAT_STATE_KEY] = createDefaultChatState();
     const state = metadata[CHAT_STATE_KEY];
     if (!state || typeof state !== 'object') return null;
-    state.version = 2;
+    state.version = 4;
     state.enabled ??= true;
+    state.skipNextGeneration = Boolean(state.skipNextGeneration);
+    state.lastBanHits = Array.isArray(state.lastBanHits) ? state.lastBanHits.slice(0, 20) : [];
     state.ignoredKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys : [];
     state.ignoredPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns : [];
     state.smart = {
@@ -104,6 +131,14 @@ function getChatState(create = true) {
     };
     state.smart.patterns = Array.isArray(state.smart.patterns) ? state.smart.patterns : [];
     state.smart.messageKeys = Array.isArray(state.smart.messageKeys) ? state.smart.messageKeys : [];
+    for (const [index, rawPattern] of state.smart.patterns.entries()) {
+        const pattern = normalizeSmartPattern(rawPattern, index);
+        if (!pattern || !state.ignoredKeys.includes(pattern.key)) continue;
+        if (!state.ignoredPatterns.some((ignored) => ignored?.key === pattern.key)) {
+            state.ignoredPatterns.push(ignoredDescriptor(pattern));
+        }
+    }
+    state.ignoredPatterns = state.ignoredPatterns.slice(-200);
     return state;
 }
 
@@ -114,6 +149,45 @@ function saveChatState() {
     } else if (typeof context.saveMetadata === 'function') {
         void context.saveMetadata();
     }
+}
+
+function saveCapturedOriginal() {
+    const context = getContext();
+    try {
+        if (typeof context.saveChatConditional === 'function') void context.saveChatConditional();
+        else if (typeof context.saveChat === 'function') void context.saveChat();
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} 원문 메타데이터 저장을 건너뜁니다.`, error);
+    }
+}
+
+function captureOriginalFromEvent(payload) {
+    const context = getContext();
+    const chat = Array.isArray(context.chat) ? context.chat : [];
+    let message = payload && typeof payload === 'object' && typeof payload.mes === 'string' ? payload : null;
+    const index = Number(payload);
+    if (!message && Number.isInteger(index) && index >= 0) message = chat[index];
+    if (!message) message = [...chat].reverse().find((item) => item && !item.is_user && !item.is_system);
+    if (preserveOriginalMessageText(message)) saveCapturedOriginal();
+    return message;
+}
+
+function updateBanHitsForMessage(message) {
+    const state = getChatState(false);
+    if (!state) return;
+    if (!message || message.is_user || message.is_system) {
+        state.lastBanHits = [];
+        saveChatState();
+        return;
+    }
+    const identity = resolveCharacterIdentity(message);
+    const text = messageText(message).normalize('NFKC').toLocaleLowerCase();
+    state.lastBanHits = getCharacterBans(identity?.uuid, false)
+        .filter((ban) => ban.type === 'term' && cleanBanTerm(ban.term))
+        .filter((ban) => text.includes(cleanBanTerm(ban.term).toLocaleLowerCase()))
+        .map((ban) => ({ term: cleanBanTerm(ban.term), characterUuid: identity.uuid }))
+        .slice(0, 20);
+    saveChatState();
 }
 
 function getChatIdentity(context = getContext()) {
@@ -138,8 +212,30 @@ function activeSwipeMetadata(message) {
     return message.swipe_info[swipeId] ?? null;
 }
 
-function findStoredOriginal(message) {
-    const sources = [activeSwipeMetadata(message), message];
+export function findStoredOriginal(message) {
+    // Feather keeps the real SillyTavern source in the active swipe / mes and puts
+    // the Korean rendering only in extra.display_text. Always trust the canonical
+    // SillyTavern source first and never inspect display_text.
+    const activeSwipeId = Number(message?.swipe_id) || 0;
+    const activeSwipe = Array.isArray(message?.swipes) ? message.swipes[activeSwipeId] : '';
+    const sillySource = typeof activeSwipe === 'string' && activeSwipe.trim()
+        ? activeSwipe.trim()
+        : typeof message?.mes === 'string' ? message.mes.trim() : '';
+    if (sillySource.length >= 8) return sillySource;
+
+    const swipeMetadata = activeSwipeMetadata(message);
+    const storedSwipeId = Number(message?.extra?.ttotto_source_swipe_id);
+    const messageSourceMatchesSwipe = !Number.isInteger(storedSwipeId) || storedSwipeId === activeSwipeId;
+    const featherRecord = message?.extra?.feather_translations?.[String(activeSwipeId)];
+    const featherSources = [
+        typeof featherRecord?.source === 'string' ? featherRecord.source.trim() : '',
+        typeof message?.extra?.feather_active?.source === 'string' ? message.extra.feather_active.source.trim() : '',
+    ];
+    for (const candidate of featherSources) {
+        if (candidate.length >= 8) return candidate;
+    }
+
+    const sources = [swipeMetadata, message];
     const paths = [
         ['extra', 'ttotto_source_text'],
         ['extra', 'original_text'],
@@ -156,6 +252,7 @@ function findStoredOriginal(message) {
 
     for (const source of sources) {
         for (const path of paths) {
+            if (source === message && path[1] === 'ttotto_source_text' && !messageSourceMatchesSwipe) continue;
             const candidate = readNestedString(source, path);
             if (candidate.length >= 8) return candidate;
         }
@@ -163,12 +260,259 @@ function findStoredOriginal(message) {
     return '';
 }
 
-function messageText(message, settings) {
-    if (settings.sourceMode === 'auto') {
-        const original = findStoredOriginal(message);
-        if (original) return original;
+export function preserveOriginalMessageText(message) {
+    if (!message || typeof message !== 'object') return false;
+    const swipeId = Number(message.swipe_id) || 0;
+    const activeSwipe = Array.isArray(message.swipes) ? message.swipes[swipeId] : '';
+    const text = typeof activeSwipe === 'string' && activeSwipe.trim()
+        ? activeSwipe.trim()
+        : typeof message.mes === 'string' ? message.mes.trim() : '';
+    if (text.length < 8) return false;
+    const swipeMetadata = activeSwipeMetadata(message);
+    let changed = false;
+    if (swipeMetadata) {
+        swipeMetadata.extra = swipeMetadata.extra && typeof swipeMetadata.extra === 'object' ? swipeMetadata.extra : {};
+        if (swipeMetadata.extra.ttotto_source_text !== text) {
+            swipeMetadata.extra.ttotto_source_text = text;
+            changed = true;
+        }
     }
-    return typeof message?.mes === 'string' ? message.mes : '';
+    message.extra = message.extra && typeof message.extra === 'object' ? message.extra : {};
+    if (message.extra.ttotto_source_text !== text || Number(message.extra.ttotto_source_swipe_id) !== swipeId) {
+        message.extra.ttotto_source_text = text;
+        message.extra.ttotto_source_swipe_id = swipeId;
+        changed = true;
+    }
+    return changed;
+}
+
+function messageText(message) {
+    return findStoredOriginal(message);
+}
+
+function normalizeAvatarKey(value) {
+    const clean = String(value ?? '').trim().replace(/[?#].*$/, '');
+    if (!clean) return '';
+    try {
+        const decoded = decodeURIComponent(clean);
+        return decoded.split('/').filter(Boolean).at(-1) ?? decoded;
+    } catch {
+        return clean.split('/').filter(Boolean).at(-1) ?? clean;
+    }
+}
+
+function newCharacterUuid() {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+    return `ttotto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function ensureCharacterUuid(settings, avatarKey, uuidFactory = newCharacterUuid) {
+    const key = normalizeAvatarKey(avatarKey);
+    if (!key) return '';
+    settings.characterUuids = settings.characterUuids && typeof settings.characterUuids === 'object'
+        ? settings.characterUuids
+        : {};
+    if (!settings.characterUuids[key]) settings.characterUuids[key] = uuidFactory();
+    return String(settings.characterUuids[key]);
+}
+
+function characterAvatarCandidates(message) {
+    return [
+        message?.original_avatar,
+        message?.force_avatar,
+        message?.avatar,
+        message?.extra?.avatar,
+        message?.extra?.character_avatar,
+    ].map(normalizeAvatarKey).filter(Boolean);
+}
+
+export function resolveCharacterAvatarKey(message, context) {
+    const characters = Array.isArray(context?.characters) ? context.characters : [];
+    const characterByAvatar = (avatar) => characters.find((character) => normalizeAvatarKey(character?.avatar) === avatar);
+
+    for (const avatar of characterAvatarCandidates(message)) {
+        const character = characterByAvatar(avatar);
+        if (character) return normalizeAvatarKey(character.avatar);
+    }
+
+    const isGroup = context?.groupId !== undefined && context?.groupId !== null && context?.groupId !== '';
+    if (!isGroup) {
+        const active = characters[Number(context?.characterId)];
+        return normalizeAvatarKey(active?.avatar);
+    }
+
+    const speaker = String(message?.name ?? '').trim();
+    const matches = characters.filter((character) => String(character?.name ?? '').trim() === speaker);
+    if (matches.length === 1) return normalizeAvatarKey(matches[0].avatar);
+    return '';
+}
+
+function resolveCharacterIdentity(message, context = getContext(), settings = getSettings()) {
+    const avatarKey = resolveCharacterAvatarKey(message, context);
+    if (!avatarKey) return null;
+    const existed = Boolean(settings.characterUuids?.[avatarKey]);
+    const uuid = ensureCharacterUuid(settings, avatarKey);
+    if (!existed && uuid) saveSettings();
+    return { uuid, avatarKey };
+}
+
+export function currentChatCharacterUuids() {
+    const context = getContext();
+    const settings = getSettings();
+    const avatarKeys = new Set();
+    const characters = Array.isArray(context.characters) ? context.characters : [];
+    const isGroup = context.groupId !== undefined && context.groupId !== null && context.groupId !== '';
+
+    if (isGroup && Array.isArray(context.groups)) {
+        const group = context.groups.find((item) => String(item?.id) === String(context.groupId));
+        for (const avatar of group?.members ?? []) {
+            const key = normalizeAvatarKey(avatar);
+            if (key) avatarKeys.add(key);
+        }
+    } else {
+        const active = characters[Number(context.characterId)];
+        const key = normalizeAvatarKey(active?.avatar);
+        if (key) avatarKeys.add(key);
+    }
+
+    for (const message of Array.isArray(context.chat) ? context.chat : []) {
+        if (!message || message.is_user || message.is_system) continue;
+        const key = resolveCharacterAvatarKey(message, context);
+        if (key) avatarKeys.add(key);
+    }
+
+    let settingsChanged = false;
+    const uuids = [];
+    for (const avatarKey of avatarKeys) {
+        const existed = Boolean(settings.characterUuids?.[avatarKey]);
+        const uuid = ensureCharacterUuid(settings, avatarKey);
+        if (uuid) uuids.push(uuid);
+        if (!existed && uuid) settingsChanged = true;
+    }
+    if (settingsChanged) saveSettings();
+    return [...new Set(uuids)];
+}
+
+function currentCharacterOptions() {
+    const context = getContext();
+    const settings = getSettings();
+    const characters = Array.isArray(context.characters) ? context.characters : [];
+    const active = new Set(currentChatCharacterUuids());
+    return characters.map((character) => {
+        const avatarKey = normalizeAvatarKey(character?.avatar);
+        const uuid = avatarKey ? ensureCharacterUuid(settings, avatarKey) : '';
+        return uuid && active.has(uuid) ? {
+            uuid,
+            name: String(character?.name || '이름 없는 캐릭터'),
+            avatarKey,
+            label: `${String(character?.name || '이름 없는 캐릭터')} · ${avatarKey || uuid.slice(0, 8)}`,
+        } : null;
+    }).filter(Boolean).filter((item, index, all) => all.findIndex((other) => other.uuid === item.uuid) === index);
+}
+
+function cleanBanTerm(value) {
+    const clean = String(value ?? '')
+        .normalize('NFKC')
+        .replace(/[<>\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return clean.length >= 1 && clean.length <= 80 ? clean : '';
+}
+
+function getCharacterBans(characterUuid, create = true) {
+    const uuid = String(characterUuid ?? '');
+    if (!uuid) return [];
+    const settings = getSettings();
+    if (!Array.isArray(settings.characterBans[uuid]) && create) settings.characterBans[uuid] = [];
+    return Array.isArray(settings.characterBans[uuid]) ? settings.characterBans[uuid] : [];
+}
+
+function stableLocalId(value) {
+    let hash = 0x811c9dc5;
+    for (const character of String(value)) {
+        hash ^= character.charCodeAt(0);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function addManualBan(characterUuid, rawTerm) {
+    const term = cleanBanTerm(rawTerm);
+    if (!term) return { ok: false, reason: '금지어는 1~80자로 입력해 주세요.' };
+    const bans = getCharacterBans(characterUuid);
+    if (bans.some((ban) => ban.type === 'term' && String(ban.term).toLocaleLowerCase() === term.toLocaleLowerCase())) {
+        return { ok: false, reason: '이미 등록된 금지어예요.' };
+    }
+    if (bans.length >= 100) return { ok: false, reason: '한 캐릭터에는 최대 100개까지 저장할 수 있어요.' };
+    bans.push({
+        id: `term-${stableLocalId(`${term}|${Date.now()}`)}`,
+        type: 'term',
+        term,
+        label: `금지어: ${term}`,
+        characterUuid,
+        createdAt: Date.now(),
+    });
+    saveSettings();
+    return { ok: true };
+}
+
+function pinPattern(pattern) {
+    const uuid = String(pattern?.characterUuid ?? '');
+    const bans = getCharacterBans(uuid);
+    if (!uuid) return false;
+    if (bans.some((ban) => ban.type === 'pattern' && ban.key === pattern.key)) return true;
+    if (bans.length >= 100) return false;
+    bans.push({
+        id: `pattern-${stableLocalId(`${pattern.key}|${Date.now()}`)}`,
+        type: 'pattern',
+        key: String(pattern.key ?? ''),
+        label: String(pattern.label ?? '영구 금지 패턴').slice(0, 100),
+        instruction: String(pattern.instruction ?? '').slice(0, 500),
+        scope: pattern.scope === 'dialogue' ? 'dialogue' : 'narration',
+        speaker: String(pattern.speaker ?? '').slice(0, 80),
+        examples: (pattern.examples ?? [pattern.example]).filter(Boolean).map(String).slice(0, 3),
+        characterUuid: uuid,
+        createdAt: Date.now(),
+    });
+    saveSettings();
+    return true;
+}
+
+function removePermanentBan(characterUuid, id) {
+    const settings = getSettings();
+    const bans = getCharacterBans(characterUuid, false);
+    settings.characterBans[characterUuid] = bans.filter((ban) => ban?.id !== id);
+    saveSettings();
+}
+
+function permanentPatternsForUuids(uuids) {
+    return uuids.flatMap((uuid) => getCharacterBans(uuid, false).map((ban, index) => {
+        const isTerm = ban.type === 'term';
+        const term = cleanBanTerm(ban.term);
+        if (isTerm && !term) return null;
+        const instruction = isTerm
+            ? `Never use or refer to the banned expression ${JSON.stringify(term)} anywhere in this character's narration or dialogue, including trivial inflections, spacing variants, or close paraphrases that name the same concept. Do not mention or discuss this ban.`
+            : String(ban.instruction ?? '').trim();
+        if (!instruction) return null;
+        return {
+            id: `pinned-${uuid}-${ban.id ?? index}`,
+            banId: ban.id ?? String(index),
+            key: `pinned|${uuid}|${ban.id ?? index}`,
+            source: 'pinned',
+            kind: isTerm ? 'permanent-term' : 'permanent-pattern',
+            scope: ban.scope === 'dialogue' ? 'dialogue' : 'narration',
+            characterUuid: uuid,
+            speaker: String(ban.speaker ?? ''),
+            label: isTerm ? `영구 금지어 · ${term}` : `영구 금지 · ${ban.label}`,
+            example: isTerm ? term : String(ban.examples?.[0] ?? ''),
+            examples: isTerm ? [term] : (ban.examples ?? []).map(String).slice(0, 3),
+            count: 0,
+            occurrences: 0,
+            confidence: 1,
+            score: 10000 - index,
+            instruction,
+        };
+    }).filter(Boolean));
 }
 
 function messageKey(message, index, text) {
@@ -176,10 +520,18 @@ function messageKey(message, index, text) {
         ?? message?.extra?.id
         ?? message?.send_date
         ?? `${index}`;
-    return `${stableId}:${Number(message?.swipe_id) || 0}:${fingerprintMessages([{ id: stableId, speaker: message?.name ?? '', text }])}`;
+    return `${getChatIdentity()}:${stableId}:${Number(message?.swipe_id) || 0}:${fingerprintMessages([{ id: stableId, speaker: message?.name ?? '', text }])}`;
 }
 
-function collectAssistantMessages({ applyWindow = true } = {}) {
+function messageMemorySlot(message, index) {
+    const stableId = message?.extra?.message_id
+        ?? message?.extra?.id
+        ?? message?.send_date
+        ?? `${index}`;
+    return `${getChatIdentity()}:${stableId}:${Number(message?.swipe_id) || 0}`;
+}
+
+function collectCurrentAssistantMessages() {
     const context = getContext();
     const settings = getSettings();
     const chat = Array.isArray(context.chat) ? context.chat : [];
@@ -188,27 +540,86 @@ function collectAssistantMessages({ applyWindow = true } = {}) {
     chat.forEach((message, index) => {
         if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') return;
         if (message.extra?.type === 'narrator' || message.extra?.type === 'system') return;
-        const text = messageText(message, settings).trim();
+        const text = messageText(message).trim();
         if (text.length < 8) return;
+        const identity = resolveCharacterIdentity(message, context, settings);
+        if (!identity?.uuid) return;
         const speaker = String(message.name || context.name2 || 'Character');
         const key = messageKey(message, index, text);
-        candidates.push({ id: key, key, speaker, text, chatIndex: index });
+        candidates.push({
+            id: key,
+            key,
+            memorySlot: messageMemorySlot(message, index),
+            speaker,
+            characterUuid: identity.uuid,
+            characterAvatarKey: identity.avatarKey,
+            text,
+            chatIndex: index,
+            chatIdentity: getChatIdentity(context),
+            fromMemory: false,
+            capturedAt: Number(new Date(message.send_date).getTime()) || Date.now() + index,
+        });
     });
+
+    return candidates;
+}
+
+function rememberCurrentMessages(messages) {
+    const settings = getSettings();
+    if (!settings.crossChatMemoryEnabled) return;
+    let changed = false;
+    for (const message of messages) {
+        const uuid = message.characterUuid;
+        const history = Array.isArray(settings.characterHistory[uuid]) ? settings.characterHistory[uuid] : [];
+        const record = {
+            id: message.id,
+            key: message.key,
+            memorySlot: message.memorySlot,
+            speaker: message.speaker,
+            characterUuid: uuid,
+            characterAvatarKey: message.characterAvatarKey,
+            text: message.text,
+            chatIdentity: message.chatIdentity,
+            capturedAt: Date.now(),
+        };
+        const existing = history.findIndex((item) => (item?.memorySlot && item.memorySlot === record.memorySlot) || item?.key === record.key);
+        if (existing >= 0) {
+            if (history[existing]?.key !== record.key || history[existing]?.text !== record.text) changed = true;
+            history[existing] = { ...history[existing], ...record };
+        }
+        else {
+            history.push(record);
+            changed = true;
+        }
+        settings.characterHistory[uuid] = history.slice(-50);
+    }
+    if (changed) saveSettings();
+}
+
+export function collectAssistantMessages({ applyWindow = true, includeMemory = true } = {}) {
+    const settings = getSettings();
+    const current = collectCurrentAssistantMessages();
+    rememberCurrentMessages(current);
+    let candidates = current;
+    if (includeMemory && settings.crossChatMemoryEnabled) {
+        const activeUuids = new Set(currentChatCharacterUuids());
+        const merged = new Map();
+        for (const uuid of activeUuids) {
+            for (const item of settings.characterHistory[uuid] ?? []) {
+                if (!item?.key || !item?.text) continue;
+                merged.set(item.key, { ...item, id: item.key, chatIndex: null, fromMemory: true });
+            }
+        }
+        current.forEach((item) => merged.set(item.key, item));
+        candidates = [...merged.values()].sort((a, b) => Number(a.capturedAt ?? 0) - Number(b.capturedAt ?? 0));
+    }
 
     if (!applyWindow) return candidates;
     return candidates.slice(-Math.max(5, Number(settings.windowSize) || DEFAULT_SETTINGS.windowSize));
 }
 
 function countAssistantMessages() {
-    const context = getContext();
-    const chat = Array.isArray(context.chat) ? context.chat : [];
-    let count = 0;
-    for (const message of chat) {
-        if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') continue;
-        if (message.extra?.type === 'narrator' || message.extra?.type === 'system') continue;
-        if (message.mes.trim().length >= 8) count += 1;
-    }
-    return count;
+    return collectAssistantMessages({ applyWindow: false, includeMemory: false }).length;
 }
 
 export function shouldRunSmartAnalysis(total, lastTotal, interval, force = false) {
@@ -236,6 +647,7 @@ function tokenSimilarity(left, right) {
 function ignoredDescriptor(pattern) {
     return {
         key: String(pattern.key ?? ''),
+        characterUuid: String(pattern.characterUuid ?? ''),
         source: String(pattern.source ?? ''),
         kind: String(pattern.kind ?? ''),
         scope: String(pattern.scope ?? ''),
@@ -246,12 +658,92 @@ function ignoredDescriptor(pattern) {
     };
 }
 
-function isPatternIgnored(pattern, state) {
-    if (state?.ignoredKeys?.includes(pattern.key)) return true;
-    for (const ignored of state?.ignoredPatterns ?? []) {
+function getCharacterAllowance(characterUuid, create = true) {
+    const uuid = String(characterUuid ?? '');
+    if (!uuid) return null;
+    const settings = getSettings();
+    if (!settings.characterAllowances[uuid] && create) {
+        settings.characterAllowances[uuid] = { ignoredKeys: [], ignoredPatterns: [] };
+    }
+    const allowance = settings.characterAllowances[uuid];
+    if (!allowance || typeof allowance !== 'object') return null;
+    allowance.ignoredKeys = Array.isArray(allowance.ignoredKeys) ? allowance.ignoredKeys : [];
+    allowance.ignoredPatterns = Array.isArray(allowance.ignoredPatterns) ? allowance.ignoredPatterns : [];
+    return allowance;
+}
+
+function migrateLegacyAllowances(state, messages) {
+    if (!state || state.legacyAllowancesMigrated) return;
+    const uuids = [...new Set(messages.map((message) => message.characterUuid).filter(Boolean))];
+    const legacyKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys.filter(Boolean) : [];
+    const legacyPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns.filter(Boolean) : [];
+    if (!legacyKeys.length && !legacyPatterns.length) {
+        state.legacyAllowancesMigrated = true;
+        saveChatState();
+        return;
+    }
+    // Do not mark migration complete before a character can be identified.
+    if (!uuids.length) return;
+
+    const speakerUuids = new Map();
+    for (const message of messages) {
+        if (!speakerUuids.has(message.speaker)) speakerUuids.set(message.speaker, new Set());
+        speakerUuids.get(message.speaker).add(message.characterUuid);
+    }
+
+    let settingsChanged = false;
+    let unresolved = false;
+    const descriptorKeys = new Set();
+    for (const raw of legacyPatterns) {
+        if (raw?.key) descriptorKeys.add(raw.key);
+        const possible = raw?.characterUuid
+            ? [raw.characterUuid]
+            : raw?.speaker && speakerUuids.get(raw.speaker)?.size === 1
+                ? [...speakerUuids.get(raw.speaker)]
+                : uuids.length === 1 ? uuids : [];
+        if (possible.length !== 1) {
+            unresolved = true;
+            continue;
+        }
+        const allowance = getCharacterAllowance(possible[0]);
+        const descriptor = { ...raw, characterUuid: possible[0] };
+        if (descriptor.key && !allowance.ignoredKeys.includes(descriptor.key)) {
+            allowance.ignoredKeys.push(descriptor.key);
+            settingsChanged = true;
+        }
+        if (descriptor.key && !allowance.ignoredPatterns.some((item) => item?.key === descriptor.key)) {
+            allowance.ignoredPatterns.push(descriptor);
+            settingsChanged = true;
+        }
+    }
+
+    const orphanKeys = legacyKeys.filter((key) => !descriptorKeys.has(key));
+    if (orphanKeys.length && uuids.length === 1) {
+        const allowance = getCharacterAllowance(uuids[0]);
+        for (const key of orphanKeys) {
+            if (!allowance.ignoredKeys.includes(key)) {
+                allowance.ignoredKeys.push(key);
+                settingsChanged = true;
+            }
+        }
+    } else if (orphanKeys.length) {
+        unresolved = true;
+    }
+
+    if (!unresolved) {
+        state.legacyAllowancesMigrated = true;
+        saveChatState();
+    }
+    if (settingsChanged) saveSettings();
+}
+
+export function isPatternIgnored(pattern, state) {
+    const allowance = getCharacterAllowance(pattern.characterUuid, false);
+    if (allowance?.ignoredKeys?.includes(pattern.key)) return true;
+    for (const ignored of allowance?.ignoredPatterns ?? []) {
         if (ignored?.key === pattern.key) return true;
+        if (String(ignored?.characterUuid ?? '') !== String(pattern.characterUuid ?? '')) continue;
         if (ignored?.scope !== pattern.scope || String(ignored?.speaker ?? '') !== String(pattern.speaker ?? '')) continue;
-        if (pattern.source !== 'smart' && ignored?.source !== 'smart') continue;
         const labelSimilarity = tokenSimilarity(ignored?.label, pattern.label);
         if (labelSimilarity >= 0.72) return true;
         if (labelSimilarity >= 0.4 && tokenSimilarity(ignored?.instruction, pattern.instruction) >= 0.82) return true;
@@ -259,6 +751,8 @@ function isPatternIgnored(pattern, state) {
         const currentExamples = Array.isArray(pattern.examples) ? pattern.examples : [pattern.example].filter(Boolean);
         if (previousExamples.some((a) => currentExamples.some((b) => tokenSimilarity(a, b) >= 0.72))) return true;
     }
+    // Compatibility only: old permissions never leave the chat where they were created.
+    if (state?.ignoredKeys?.includes(pattern.key)) return true;
     return false;
 }
 
@@ -295,24 +789,39 @@ function analyzeCurrentChat(force = false) {
     const settings = getSettings();
     const state = getChatState();
     const messages = collectAssistantMessages();
+    migrateLegacyAllowances(state, messages);
     const settingsKey = [
         settings.windowSize,
         settings.sensitivity,
         settings.narrationEnabled,
         settings.dialogueEnabled,
         settings.sourceMode,
+        settings.crossChatMemoryEnabled,
+        settings.excludedTags,
+        settings.excludedClasses,
     ].join('|');
-    const ignoredFingerprint = fingerprintMessages((state?.ignoredPatterns ?? []).map((pattern, index) => ({
+    const activeUuids = [...new Set(messages.map((message) => message.characterUuid).filter(Boolean))];
+    const activeAllowances = activeUuids.flatMap((uuid) => getCharacterAllowance(uuid, false)?.ignoredPatterns ?? []);
+    const ignoredFingerprint = fingerprintMessages(activeAllowances.map((pattern, index) => ({
         id: index,
         speaker: pattern.speaker ?? '',
+        characterUuid: pattern.characterUuid ?? '',
         text: `${pattern.key ?? ''}|${pattern.label ?? ''}|${pattern.instruction ?? ''}`,
     })));
-    const fingerprint = `${fingerprintMessages(messages)}|${settingsKey}|${state?.ignoredKeys?.join(',') ?? ''}|${ignoredFingerprint}|${state?.smart?.lastRunAt ?? 0}|${state?.smart?.stale ? 1 : 0}`;
+    const permanentPatterns = permanentPatternsForUuids([...new Set([...currentChatCharacterUuids(), ...activeUuids])]);
+    const permanentFingerprint = fingerprintMessages(permanentPatterns.map((pattern, index) => ({
+        id: index,
+        speaker: pattern.speaker,
+        characterUuid: pattern.characterUuid,
+        text: `${pattern.key}|${pattern.instruction}`,
+    })));
+    const fingerprint = `${fingerprintMessages(messages)}|${settingsKey}|${ignoredFingerprint}|${permanentFingerprint}|${state?.smart?.lastRunAt ?? 0}|${state?.smart?.stale ? 1 : 0}`;
     if (!force && analysisCache?.fingerprint === fingerprint) return analysisCache;
 
     const localPatterns = detectPatterns(messages, settings, getContextNames());
     const smartPatterns = smartPatternsForMessages(state, messages);
-    const patterns = mergePatterns(localPatterns, smartPatterns).filter((pattern) => !isPatternIgnored(pattern, state));
+    const detectedPatterns = mergePatterns(localPatterns, smartPatterns).filter((pattern) => !isPatternIgnored(pattern, state));
+    const patterns = [...permanentPatterns, ...detectedPatterns];
     const prompt = buildInjection(patterns, Number(settings.maxInjectedPatterns) || DEFAULT_SETTINGS.maxInjectedPatterns);
 
     analysisCache = {
@@ -320,6 +829,7 @@ function analyzeCurrentChat(force = false) {
         messages,
         localPatterns,
         smartPatterns,
+        permanentPatterns,
         patterns,
         prompt,
     };
@@ -352,6 +862,13 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const state = getChatState(false);
         if (!runtimeActive || !settings.enabled || !state?.enabled) return;
         if (!ALLOWED_GENERATION_TYPES.has(String(type ?? '').toLocaleLowerCase())) return;
+        if (state.skipNextGeneration) {
+            state.skipNextGeneration = false;
+            saveChatState();
+            updateUi();
+            toastr.info('이번 생성에서는 또또가 쉬어요. 다음 생성부터 자동으로 다시 켜져요.', '🌀또또');
+            return;
+        }
         const analysis = analyzeCurrentChat(true);
         if (!analysis.prompt) return;
         getContext().setExtensionPrompt(
@@ -370,13 +887,14 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
 };
 
 function buildSmartInput(messages) {
+    const settings = getSettings();
     const selected = messages.slice(-Math.min(12, messages.length));
     return selected.map((message, index) => {
-        const { narration, dialogue } = splitDialogueAndNarration(message.text);
+        const { narration, dialogue } = splitDialogueAndNarration(message.text, settings);
         const narrationText = narration.join(' ').slice(0, 1100);
         const dialogueText = dialogue.join(' / ').slice(0, 900);
         return [
-            `[M${index + 1} | speaker=${message.speaker}]`,
+            `[M${index + 1} | character_uuid=${message.characterUuid} | speaker=${message.speaker}]`,
             narrationText ? `NARRATION: ${narrationText}` : '',
             dialogueText ? `DIALOGUE: ${dialogueText}` : '',
         ].filter(Boolean).join('\n');
@@ -384,7 +902,7 @@ function buildSmartInput(messages) {
 }
 
 function smartPromptMessages(messages) {
-    const system = `You analyze repetitive prose habits in roleplay assistant outputs. Return JSON only, with no markdown.\n\nSchema:\n{"patterns":[{"scope":"narration|dialogue","speaker":"speaker name or empty","label":"short Korean UI label","instruction":"concise English instruction for the next creative-writing response","examples":["short exact excerpts"],"count":3,"confidence":0.0}]}\n\nRules:\n- Find expressions, semantic reaction beats, dialogue responses, dialogue endings, question forms, or sentence structures repeated in at least 3 different message IDs.\n- Analyze dialogue separately for each speaker.\n- Do not flag names, plot facts, necessary terminology, pronouns, ordinary function words, or intentional character voice by itself.\n- Do flag a character's catchphrase only when it is functioning as repetitive filler rather than meaningful characterization.\n- Instructions must demand genuinely different construction, not synonym substitution.\n- Preserve characterization, relationship dynamics, plot, tone, intensity, and explicitness. Only vary wording and sentence construction.\n- Return at most 6 high-confidence patterns. If none qualify, return {"patterns":[]}.`;
+    const system = `You analyze repetitive prose habits in roleplay assistant outputs. Return JSON only, with no markdown.\n\nSchema:\n{"patterns":[{"character_uuid":"copy the exact UUID from the analyzed messages","scope":"narration|dialogue","speaker":"speaker name or empty","label":"short Korean UI label","instruction":"concise English instruction for the next creative-writing response","examples":["short exact excerpts"],"count":3,"confidence":0.0}]}\n\nRules:\n- Find expressions, semantic reaction beats, dialogue responses, dialogue endings, question forms, or sentence structures repeated in at least 3 different message IDs belonging to the same character_uuid.\n- Never combine messages that have different character_uuid values, even when their speaker names are identical.\n- Copy the exact character_uuid into every returned pattern.\n- Analyze dialogue separately for each speaker.\n- Do not flag names, plot facts, necessary terminology, pronouns, ordinary function words, or intentional character voice by itself.\n- Do flag a character's catchphrase only when it is functioning as repetitive filler rather than meaningful characterization.\n- Instructions must demand genuinely different construction, not synonym substitution.\n- Preserve characterization, relationship dynamics, plot, tone, intensity, and explicitness. Only vary wording and sentence construction.\n- Return at most 6 high-confidence patterns. If none qualify, return {"patterns":[]}.`;
     const user = `Inspect only the assistant outputs below. Message IDs are M1, M2, etc.\n\n${buildSmartInput(messages)}`;
     return [
         { role: 'system', content: system },
@@ -392,14 +910,30 @@ function smartPromptMessages(messages) {
     ];
 }
 
-function parseSmartResponse(text) {
+function parseSmartResponse(text, messages) {
     const clean = String(text ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
     if (start < 0 || end <= start) throw new Error('정밀 분석 응답에 JSON 객체가 없습니다.');
     const parsed = JSON.parse(clean.slice(start, end + 1));
     const patterns = Array.isArray(parsed?.patterns) ? parsed.patterns : [];
-    return patterns.map((pattern, index) => normalizeSmartPattern(pattern, index)).filter(Boolean).slice(0, 6);
+    const knownUuids = new Set(messages.map((message) => message.characterUuid).filter(Boolean));
+    const speakerUuids = new Map();
+    for (const message of messages) {
+        if (!speakerUuids.has(message.speaker)) speakerUuids.set(message.speaker, new Set());
+        speakerUuids.get(message.speaker).add(message.characterUuid);
+    }
+    return patterns.map((raw, index) => {
+        const declared = String(raw?.character_uuid ?? raw?.characterUuid ?? '');
+        let characterUuid = knownUuids.has(declared) ? declared : '';
+        if (!characterUuid && knownUuids.size === 1) characterUuid = [...knownUuids][0];
+        if (!characterUuid) {
+            const matches = speakerUuids.get(String(raw?.speaker ?? ''));
+            if (matches?.size === 1) characterUuid = [...matches][0];
+        }
+        if (!characterUuid) return null;
+        return normalizeSmartPattern({ ...raw, characterUuid }, index);
+    }).filter(Boolean).slice(0, 6);
 }
 
 async function requestSmartAnalysis(messages, signal) {
@@ -464,7 +998,7 @@ async function runSmartAnalysis({ manual = false } = {}) {
             aborted.name = 'AbortError';
             throw aborted;
         }
-        const patterns = parseSmartResponse(response);
+        const patterns = parseSmartResponse(response, messages);
         state.smart = {
             fingerprint: fingerprintMessages(messages),
             messageKeys: messages.map((message) => message.key),
@@ -555,6 +1089,39 @@ function makeBadge(text, className = '') {
     return badge;
 }
 
+function patternEvidence(pattern) {
+    const messages = analysisCache?.messages ?? [];
+    const examples = (pattern.examples ?? [pattern.example]).filter(Boolean).map(String);
+    const results = [];
+    for (const example of examples) {
+        const message = messages.find((item) => item.characterUuid === pattern.characterUuid
+            && (item.text.includes(example) || tokenSimilarity(item.text, example) >= 0.72));
+        if (!message) continue;
+        if (results.some((item) => item.key === message.key)) continue;
+        results.push({
+            key: message.key,
+            chatIndex: Number.isInteger(message.chatIndex) ? message.chatIndex : null,
+            fromMemory: Boolean(message.fromMemory),
+            snippet: example.slice(0, 180),
+        });
+    }
+    return results.slice(0, 3);
+}
+
+function jumpToMessage(chatIndex) {
+    if (!Number.isInteger(chatIndex)) return;
+    const target = document.querySelector(`.mes[mesid="${chatIndex}"]`);
+    if (!target) {
+        toastr.info('현재 화면에서 그 메시지를 찾지 못했어요.', '🌀또또');
+        return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('ttotto-message-flash');
+    void target.offsetWidth;
+    target.classList.add('ttotto-message-flash');
+    setTimeout(() => target.classList.remove('ttotto-message-flash'), 1600);
+}
+
 function renderPatterns(patterns) {
     const list = document.getElementById('ttotto-pattern-list');
     const empty = document.getElementById('ttotto-empty');
@@ -581,20 +1148,79 @@ function renderPatterns(patterns) {
 
         const meta = document.createElement('div');
         meta.className = 'ttotto-pattern-meta';
-        const source = pattern.source === 'smart' ? 'AI 정밀' : '로컬';
+        const source = pattern.source === 'pinned' ? '영구 금지' : pattern.source === 'smart' ? 'AI 정밀' : '로컬';
         const speaker = pattern.scope === 'dialogue' && pattern.speaker ? ` · ${pattern.speaker}` : '';
-        meta.textContent = `${pattern.count}개 답변에서 감지 · ${source}${speaker}`;
+        meta.textContent = pattern.source === 'pinned'
+            ? `${source}${speaker} · 매 생성에 주입`
+            : `${pattern.count}개 답변에서 감지 · ${source}${speaker}`;
+
+        const evidenceItems = patternEvidence(pattern);
+        let evidence = null;
+        if (evidenceItems.length) {
+            evidence = document.createElement('details');
+            evidence.className = 'ttotto-evidence';
+            const summary = document.createElement('summary');
+            summary.textContent = `왜 잡혔지? 예시 ${evidenceItems.length}개`;
+            evidence.append(summary);
+            for (const item of evidenceItems) {
+                const row = document.createElement('div');
+                row.className = 'ttotto-evidence-row';
+                if (item.chatIndex !== null) {
+                    const jump = document.createElement('button');
+                    jump.type = 'button';
+                    jump.className = 'menu_button ttotto-evidence-jump';
+                    jump.textContent = `#${item.chatIndex + 1}`;
+                    jump.addEventListener('click', () => jumpToMessage(item.chatIndex));
+                    row.append(jump);
+                } else {
+                    row.append(makeBadge('지난 채팅'));
+                }
+                const snippet = document.createElement('span');
+                snippet.className = 'ttotto-evidence-snippet';
+                snippet.textContent = `“${item.snippet}”`;
+                row.append(snippet);
+                evidence.append(row);
+            }
+        }
 
         const actions = document.createElement('div');
         actions.className = 'ttotto-pattern-actions';
-        const allow = document.createElement('button');
-        allow.type = 'button';
-        allow.className = 'menu_button';
-        allow.textContent = '이 패턴 허용';
-        allow.addEventListener('click', () => ignorePattern(pattern));
-        actions.append(allow);
+        if (pattern.source === 'pinned') {
+            const unpin = document.createElement('button');
+            unpin.type = 'button';
+            unpin.className = 'menu_button';
+            unpin.textContent = '영구 금지 해제';
+            unpin.addEventListener('click', () => {
+                removePermanentBan(pattern.characterUuid, pattern.banId);
+                invalidateAnalysis();
+                updateUi();
+            });
+            actions.append(unpin);
+        } else {
+            const pin = document.createElement('button');
+            pin.type = 'button';
+            pin.className = 'menu_button';
+            pin.textContent = '📌 계속 금지';
+            pin.addEventListener('click', () => {
+                if (!pinPattern(pattern)) {
+                    toastr.error('이 패턴을 영구 금지로 저장하지 못했어요.', '🌀또또');
+                    return;
+                }
+                invalidateAnalysis();
+                updateUi();
+                toastr.success('이 캐릭터에게 계속 금지했어요.', '🌀또또');
+            });
+            const allow = document.createElement('button');
+            allow.type = 'button';
+            allow.className = 'menu_button';
+            allow.textContent = '이 패턴 허용';
+            allow.addEventListener('click', () => ignorePattern(pattern));
+            actions.append(pin, allow);
+        }
 
-        article.append(head, meta, actions);
+        article.append(head, meta);
+        if (evidence) article.append(evidence);
+        article.append(actions);
         list.append(article);
     }
 
@@ -603,15 +1229,18 @@ function renderPatterns(patterns) {
 }
 
 function ignorePattern(pattern) {
-    const state = getChatState();
-    if (!state) return;
-    if (!state.ignoredKeys.includes(pattern.key)) state.ignoredKeys.push(pattern.key);
-    state.ignoredKeys = state.ignoredKeys.slice(-200);
-    if (!state.ignoredPatterns.some((ignored) => ignored?.key === pattern.key)) {
-        state.ignoredPatterns.push(ignoredDescriptor(pattern));
+    const allowance = getCharacterAllowance(pattern.characterUuid);
+    if (!allowance) {
+        toastr.error('이 패턴의 캐릭터 UUID를 확인할 수 없어 허용하지 않았어요.', '🌀또또');
+        return;
     }
-    state.ignoredPatterns = state.ignoredPatterns.slice(-200);
-    saveChatState();
+    if (!allowance.ignoredKeys.includes(pattern.key)) allowance.ignoredKeys.push(pattern.key);
+    allowance.ignoredKeys = allowance.ignoredKeys.slice(-200);
+    if (!allowance.ignoredPatterns.some((ignored) => ignored?.key === pattern.key)) {
+        allowance.ignoredPatterns.push(ignoredDescriptor(pattern));
+    }
+    allowance.ignoredPatterns = allowance.ignoredPatterns.slice(-200);
+    saveSettings();
     invalidateAnalysis();
     analyzeCurrentChat(true);
     updateUi();
@@ -640,6 +1269,65 @@ function updateSmartStatus(state) {
     element.hidden = true;
 }
 
+function renderBanManager() {
+    const select = document.getElementById('ttotto-ban-character');
+    const list = document.getElementById('ttotto-ban-list');
+    const add = document.getElementById('ttotto-add-ban');
+    if (!select || !list || !add) return;
+    const previous = select.value;
+    const options = currentCharacterOptions();
+    select.replaceChildren();
+    for (const item of options) {
+        const option = document.createElement('option');
+        option.value = item.uuid;
+        option.textContent = item.label;
+        select.append(option);
+    }
+    if (previous && options.some((item) => item.uuid === previous)) select.value = previous;
+    const uuid = select.value;
+    add.disabled = !uuid;
+    list.replaceChildren();
+    if (!uuid) {
+        const empty = document.createElement('small');
+        empty.textContent = '채팅을 열면 캐릭터를 고를 수 있어요.';
+        list.append(empty);
+        return;
+    }
+    const bans = getCharacterBans(uuid, false);
+    for (const ban of bans) {
+        const row = document.createElement('div');
+        row.className = 'ttotto-ban-item';
+        const text = document.createElement('span');
+        text.textContent = ban.type === 'term' ? `🚫 ${ban.term}` : `📌 ${ban.label}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'menu_button';
+        remove.textContent = '삭제';
+        remove.addEventListener('click', () => {
+            removePermanentBan(uuid, ban.id);
+            invalidateAnalysis();
+            updateUi();
+        });
+        row.append(text, remove);
+        list.append(row);
+    }
+    if (!bans.length) {
+        const empty = document.createElement('small');
+        empty.textContent = '이 캐릭터의 영구 금지 항목은 아직 없어요.';
+        list.append(empty);
+    }
+}
+
+function updateBanWarning(state) {
+    const warning = document.getElementById('ttotto-ban-warning');
+    if (!warning) return;
+    const hits = state?.lastBanHits ?? [];
+    warning.hidden = !hits.length;
+    warning.textContent = hits.length
+        ? `⚠️ 방금 답변에 영구 금지어가 다시 나왔어요: ${hits.map((item) => item.term).join(', ')} · 필요하면 재생성해 주세요.`
+        : '';
+}
+
 function updateUi() {
     if (!uiReady) return;
     const settings = getSettings();
@@ -657,9 +1345,11 @@ function updateUi() {
     document.getElementById('ttotto-smart-enabled').checked = settings.smartAnalysis;
     document.getElementById('ttotto-smart-interval').value = String(settings.smartInterval);
     document.getElementById('ttotto-max-patterns').value = String(settings.maxInjectedPatterns);
-    document.getElementById('ttotto-source-mode').value = settings.sourceMode;
+    document.getElementById('ttotto-cross-memory-enabled').checked = Boolean(settings.crossChatMemoryEnabled);
+    document.getElementById('ttotto-excluded-tags').value = settings.excludedTags;
+    document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
-    document.getElementById('ttotto-scope-summary').textContent = `최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'}`;
+    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'}`;
 
     const header = document.getElementById('ttotto-header-status');
     if (!settings.enabled) header.textContent = '현재 꺼져 있어요';
@@ -671,6 +1361,11 @@ function updateUi() {
     document.getElementById('ttotto-prompt-text').textContent = enabled && analysis.prompt ? analysis.prompt : '현재 주입할 내용이 없어요.';
     document.getElementById('ttotto-prompt-size').textContent = `${enabled ? analysis.prompt.length : 0}자`;
     document.getElementById('ttotto-run-smart').disabled = smartRunning || !settings.smartAnalysis || !state;
+    const skip = document.getElementById('ttotto-skip-once');
+    skip.disabled = !state;
+    skip.textContent = state?.skipNextGeneration ? '다음 생성 쉬는 중 · 취소' : '다음 생성만 쉬기';
+    renderBanManager();
+    updateBanWarning(state);
     updateSmartStatus(state);
 }
 
@@ -715,7 +1410,7 @@ function bindSetting(id, key, parser = (value) => value) {
         const settings = getSettings();
         settings[key] = parser(value);
         saveSettings();
-        if (key === 'windowSize' || key === 'sourceMode') markSmartResultsStale();
+        if (['windowSize', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
         if (key === 'smartAnalysis') {
             if (settings.smartAnalysis) {
                 scheduleSmartAnalysis({ force: true });
@@ -725,7 +1420,7 @@ function bindSetting(id, key, parser = (value) => value) {
                 forceSmartOnNextAnalysis = false;
                 smartAbortController?.abort();
             }
-        } else if ((key === 'windowSize' || key === 'sourceMode') && settings.smartAnalysis) {
+        } else if (['windowSize', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key) && settings.smartAnalysis) {
             scheduleSmartAnalysis({ force: true });
         }
         invalidateAnalysis();
@@ -755,7 +1450,35 @@ function bindUi() {
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);
     bindSetting('ttotto-max-patterns', 'maxInjectedPatterns', Number);
-    bindSetting('ttotto-source-mode', 'sourceMode', String);
+    bindSetting('ttotto-cross-memory-enabled', 'crossChatMemoryEnabled', Boolean);
+    bindSetting('ttotto-excluded-tags', 'excludedTags', String);
+    bindSetting('ttotto-excluded-classes', 'excludedClasses', String);
+
+    document.getElementById('ttotto-ban-character').addEventListener('change', renderBanManager);
+    const submitBan = () => {
+        const uuid = document.getElementById('ttotto-ban-character').value;
+        const input = document.getElementById('ttotto-ban-term');
+        if (!uuid) {
+            toastr.info('금지어를 적용할 캐릭터를 먼저 골라주세요.', '🌀또또');
+            return;
+        }
+        const result = addManualBan(uuid, input.value);
+        if (!result.ok) {
+            toastr.info(result.reason, '🌀또또');
+            return;
+        }
+        input.value = '';
+        invalidateAnalysis();
+        updateUi();
+        toastr.success('이 캐릭터의 영구 금지어로 저장했어요.', '🌀또또');
+    };
+    document.getElementById('ttotto-add-ban').addEventListener('click', submitBan);
+    document.getElementById('ttotto-ban-term').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            submitBan();
+        }
+    });
 
     document.getElementById('ttotto-chat-enabled').addEventListener('change', (event) => {
         const state = getChatState();
@@ -784,16 +1507,27 @@ function bindUi() {
         void runSmartAnalysis({ manual: true });
     });
 
-    document.getElementById('ttotto-clear-ignored').addEventListener('click', async () => {
-        if (!await confirmAction('🌀또또', '현재 채팅에서 허용한 반복 패턴 목록을 초기화할까요?')) return;
+    document.getElementById('ttotto-skip-once').addEventListener('click', () => {
         const state = getChatState();
         if (!state) return;
-        state.ignoredKeys = [];
-        state.ignoredPatterns = [];
+        state.skipNextGeneration = !state.skipNextGeneration;
         saveChatState();
+        updateUi();
+    });
+
+    document.getElementById('ttotto-clear-ignored').addEventListener('click', async () => {
+        const uuids = currentChatCharacterUuids();
+        if (!uuids.length) {
+            toastr.info('현재 채팅의 캐릭터를 확인할 수 없어요.', '🌀또또');
+            return;
+        }
+        if (!await confirmAction('🌀또또', '현재 채팅에 등장한 캐릭터들의 허용 목록을 초기화할까요? 같은 카드의 다른 채팅에도 적용돼요.')) return;
+        const settings = getSettings();
+        uuids.forEach((uuid) => delete settings.characterAllowances[uuid]);
+        saveSettings();
         invalidateAnalysis();
         updateUi();
-        toastr.success('허용 목록을 초기화했어요.', '🌀또또');
+        toastr.success('캐릭터별 허용 목록을 초기화했어요.', '🌀또또');
     });
 
     document.getElementById('ttotto-clear-smart').addEventListener('click', async () => {
@@ -805,6 +1539,22 @@ function bindUi() {
         invalidateAnalysis();
         updateUi();
         toastr.success('정밀 분석 기록을 초기화했어요.', '🌀또또');
+    });
+
+    document.getElementById('ttotto-clear-memory').addEventListener('click', async () => {
+        const uuids = currentChatCharacterUuids();
+        if (!uuids.length) {
+            toastr.info('현재 채팅의 캐릭터를 확인할 수 없어요.', '🌀또또');
+            return;
+        }
+        if (!await confirmAction('🌀또또', '현재 채팅 캐릭터들의 지난 채팅 기억을 삭제할까요?')) return;
+        const settings = getSettings();
+        uuids.forEach((uuid) => delete settings.characterHistory[uuid]);
+        saveSettings();
+        markSmartResultsStale();
+        invalidateAnalysis();
+        updateUi();
+        toastr.success('현재 캐릭터들의 지난 채팅 기억을 삭제했어요.', '🌀또또');
     });
 }
 
@@ -836,15 +1586,24 @@ function registerEvents() {
         registeredEventHandlers.push({ event, handler });
     };
 
-    listen('MESSAGE_RECEIVED', () => scheduleAnalysis({ smart: true, delay: 350 }));
+    listen('MESSAGE_RECEIVED', (payload) => {
+        const message = captureOriginalFromEvent(payload);
+        updateBanHitsForMessage(message);
+        scheduleAnalysis({ smart: true, delay: 350 });
+    });
     listen('CHARACTER_MESSAGE_RENDERED', () => scheduleAnalysis({ smart: true, delay: 650 }));
     const handleHistoryMutation = () => {
         markSmartResultsStale();
         scheduleAnalysis({ smart: true, forceSmart: true, delay: 250 });
     };
-    listen('MESSAGE_EDITED', handleHistoryMutation);
+    const handleSourceMutation = (payload) => {
+        captureOriginalFromEvent(payload);
+        handleHistoryMutation();
+    };
+    listen('MESSAGE_EDITED', handleSourceMutation);
+    listen('MESSAGE_UPDATED', handleSourceMutation);
     listen('MESSAGE_DELETED', handleHistoryMutation);
-    listen('MESSAGE_SWIPED', handleHistoryMutation);
+    listen('MESSAGE_SWIPED', handleSourceMutation);
     listen('GENERATION_ENDED', clearInjectedPrompt);
     listen('GENERATION_STOPPED', clearInjectedPrompt);
     listen('CHAT_CHANGED', () => {
