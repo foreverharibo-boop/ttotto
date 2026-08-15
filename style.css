@@ -43,6 +43,54 @@
   white-space: nowrap;
 }
 
+/* Keep ttotto checkmarks visible even when a SillyTavern theme uses a white
+   native accent/checkmark. This is strictly scoped to this extension. */
+#ttotto-settings input[type="checkbox"] {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  display: inline-block !important;
+  position: static !important;
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 2px solid #555 !important;
+  border-radius: 4px !important;
+  background-color: #fff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+  vertical-align: middle !important;
+  cursor: pointer;
+}
+
+#ttotto-settings input[type="checkbox"]::before,
+#ttotto-settings input[type="checkbox"]::after {
+  content: none !important;
+}
+
+#ttotto-settings input[type="checkbox"]:checked {
+  border-color: #111 !important;
+  background-color: #fff !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8l3 3 7-7' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 14px 14px !important;
+}
+
+#ttotto-settings input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--SmartThemeQuoteColor, #777) !important;
+  outline-offset: 2px !important;
+}
+
+#ttotto-settings input[type="checkbox"]:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed;
+}
+
 #ttotto-settings .ttotto-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
