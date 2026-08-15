@@ -1,6 +1,10 @@
 const MAX_MESSAGE_CHARS = 8000;
 const MAX_SENTENCE_CHARS = 700;
 const MAX_LOCAL_PATTERNS = 24;
+const VOID_HTML_TAGS = new Set([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+    'param', 'source', 'track', 'wbr',
+]);
 
 const STOPWORDS = new Set([
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'for', 'from', 'had', 'has', 'have',
@@ -115,6 +119,54 @@ function stripBalancedHtmlBlocksByClass(text, tagName, className) {
     return output;
 }
 
+export function stripAllPairedTagBlocks(text) {
+    const input = String(text ?? '');
+    const tagPattern = /<(\/?)\s*([A-Za-z][A-Za-z0-9_:-]*)(?:\s[^<>]*?)?\s*(\/?)>/g;
+    const stack = [];
+    const ranges = [];
+    let match;
+
+    while ((match = tagPattern.exec(input)) !== null) {
+        const closing = match[1] === '/';
+        const name = match[2].toLocaleLowerCase();
+        const selfClosing = match[3] === '/' || VOID_HTML_TAGS.has(name);
+        if (!closing) {
+            if (!selfClosing) stack.push({ name, start: match.index });
+            continue;
+        }
+
+        let openingIndex = -1;
+        for (let index = stack.length - 1; index >= 0; index -= 1) {
+            if (stack[index].name === name) {
+                openingIndex = index;
+                break;
+            }
+        }
+        if (openingIndex < 0) continue;
+        ranges.push([stack[openingIndex].start, tagPattern.lastIndex]);
+        // Any still-open tags above this match were nested inside the removed
+        // range, so discard them too. This also handles mildly malformed HTML.
+        stack.splice(openingIndex);
+    }
+
+    if (!ranges.length) return input;
+    ranges.sort((left, right) => left[0] - right[0] || right[1] - left[1]);
+    const merged = [];
+    for (const range of ranges) {
+        const previous = merged.at(-1);
+        if (!previous || range[0] > previous[1]) merged.push([...range]);
+        else previous[1] = Math.max(previous[1], range[1]);
+    }
+
+    let cursor = 0;
+    let output = '';
+    for (const [start, end] of merged) {
+        output += `${input.slice(cursor, start)} `;
+        cursor = end;
+    }
+    return `${output}${input.slice(cursor)}`;
+}
+
 function parseExclusionList(value, kind) {
     const source = Array.isArray(value) ? value : String(value ?? '').split(/[\s,]+/);
     const pattern = kind === 'tag'
@@ -140,6 +192,9 @@ function stripNonProse(text, exclusions = {}) {
         for (const tagName of ['div', 'section', 'aside', 'article', 'table', 'span']) {
             clean = stripBalancedHtmlBlocksByClass(clean, tagName, className);
         }
+    }
+    if (exclusions.excludeAllTaggedBlocks !== false) {
+        clean = stripAllPairedTagBlocks(clean);
     }
     clean = clipMessage(clean);
 

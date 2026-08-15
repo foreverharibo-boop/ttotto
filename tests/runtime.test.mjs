@@ -77,6 +77,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.ok(listeners.get(eventTypes.GENERATION_ENDED)?.size);
     assert.ok(listeners.get(eventTypes.GENERATION_STOPPED)?.size);
     assert.ok(listeners.get(eventTypes.MESSAGE_UPDATED)?.size);
+    assert.equal(listeners.get(eventTypes.CHARACTER_MESSAGE_RENDERED)?.size ?? 0, 0);
 
     context.extensionSettings.ttotto = {
         enabled: true,
@@ -339,5 +340,52 @@ test('영구 금지어와 1회 쉬기, UUID별 지난 채팅 기억이 함께 �
     const otherCard = module.collectAssistantMessages({ applyWindow: false });
     assert.equal(otherCard.length, 1);
     assert.equal(otherCard[0].characterUuid, 'uuid-other');
+    module.onDisable();
+});
+
+test('수천 개짜리 긴 채팅에서도 최근 분석 범위만 원문으로 읽는다', async () => {
+    let textReads = 0;
+    const chat = Array.from({ length: 6000 }, (_, index) => {
+        if (index % 2 === 0) return { is_user: true, mes: `user ${index}` };
+        const message = { name: 'Peter', send_date: index };
+        Object.defineProperty(message, 'mes', {
+            configurable: true,
+            enumerable: true,
+            get() {
+                textReads += 1;
+                return `Assistant reply ${index} with enough original text to analyze safely.`;
+            },
+        });
+        return message;
+    });
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {
+            ttotto: {
+                enabled: true,
+                windowSize: 20,
+                sensitivity: 'normal',
+                narrationEnabled: true,
+                dialogueEnabled: true,
+                smartAnalysis: false,
+                characterUuids: { 'peter.png': 'uuid-peter' },
+                characterAllowances: {}, characterBans: {}, characterHistory: {},
+                crossChatMemoryEnabled: false,
+            },
+        },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'long-chat', groupId: null, characterId: 0,
+        name1: 'User', name2: 'Peter', groups: [],
+        characters: [{ name: 'Peter', avatar: 'peter.png' }],
+        chat,
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?long=${Date.now()}`);
+    const messages = module.collectAssistantMessages();
+    assert.equal(messages.length, 20);
+    assert.ok(textReads < 150, `최근 20개 대신 너무 많은 원문을 읽음: ${textReads}`);
     module.onDisable();
 });

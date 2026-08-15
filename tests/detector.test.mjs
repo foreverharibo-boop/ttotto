@@ -5,6 +5,7 @@ import {
     detectPatterns,
     normalizeSmartPattern,
     splitDialogueAndNarration,
+    stripAllPairedTagBlocks,
 } from '../detector.js';
 
 const settings = {
@@ -47,6 +48,31 @@ He opened the window instead.`;
     const combined = [...parts.narration, ...parts.dialogue].join(' ');
     assert.doesNotMatch(combined, /repeated status|Sword x 3/);
     assert.match(combined, /opened the window/);
+});
+
+test('이름이 달라진 태그와 모든 div 블록을 중첩된 내용까지 자동 제외한다', () => {
+    const text = `Before.
+<Completely_new_info><Date_box>2026.08.15.</Date_box><Weather>Rainy</Weather></Completely_new_info>
+<div class="unknown-card"><div class="row">Secret repeated dashboard text</div></div>
+After the blocks, he opened the window.`;
+    const parts = splitDialogueAndNarration(text, { excludeAllTaggedBlocks: true });
+    const combined = [...parts.narration, ...parts.dialogue].join(' ');
+    assert.doesNotMatch(combined, /2026|Rainy|Secret repeated|dashboard/);
+    assert.match(combined, /Before/);
+    assert.match(combined, /opened the window/);
+});
+
+test('태그 전체 제외를 끄면 알 수 없는 태그 안의 실제 본문은 보존한다', () => {
+    const parts = splitDialogueAndNarration(
+        '<content>He kept the actual story inside this wrapper.</content>',
+        { excludeAllTaggedBlocks: false },
+    );
+    assert.match(parts.narration.join(' '), /actual story inside this wrapper/);
+});
+
+test('닫는 태그가 없는 껍데기는 뒤의 본문까지 지우지 않는다', () => {
+    const clean = stripAllPairedTagBlocks('<broken_box>Keep this prose because the block never closes.');
+    assert.match(clean, /Keep this prose/);
 });
 
 test('반복되는 인포블럭만으로 반복 패턴을 만들지 않는다', () => {

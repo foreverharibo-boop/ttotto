@@ -127,15 +127,25 @@
 
         <div class="ttotto-subsection">
           <strong>분석 제외 블록</strong>
-          <small>인포 패널처럼 매번 나와야 하는 태그나 HTML 클래스를 추가해요.</small>
-          <label class="ttotto-stack-field" for="ttotto-excluded-tags">
-            <span>제외 태그</span>
-            <input id="ttotto-excluded-tags" class="text_pole" type="text" placeholder="Status_block, Inventory">
+          <small>인포 패널처럼 매번 나와야 하는 꾸밈 블록을 반복 분석에서 빼요.</small>
+          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-exclude-all-tags">
+            <span>
+              <strong>태그·HTML 블록 전부 제외</strong>
+              <small>&lt;아무이름&gt;…&lt;/아무이름&gt;, &lt;div&gt;…&lt;/div&gt; 안의 내용까지 자동으로 빼요</small>
+            </span>
+            <input id="ttotto-exclude-all-tags" type="checkbox">
           </label>
-          <label class="ttotto-stack-field" for="ttotto-excluded-classes">
-            <span>제외 클래스</span>
-            <input id="ttotto-excluded-classes" class="text_pole" type="text" placeholder=".status-card, .inventory-card">
-          </label>
+          <div id="ttotto-custom-exclusions">
+            <small>위 기능을 끈 경우에만 필요한 블록을 직접 지정할 수 있어요.</small>
+            <label class="ttotto-stack-field" for="ttotto-excluded-tags">
+              <span>제외 태그</span>
+              <input id="ttotto-excluded-tags" class="text_pole" type="text" placeholder="Status_block, Inventory">
+            </label>
+            <label class="ttotto-stack-field" for="ttotto-excluded-classes">
+              <span>제외 클래스</span>
+              <input id="ttotto-excluded-classes" class="text_pole" type="text" placeholder=".status-card, .inventory-card">
+            </label>
+          </div>
         </div>
 
         <label class="ttotto-setting-row" for="ttotto-smart-enabled">

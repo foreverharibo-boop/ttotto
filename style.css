@@ -225,6 +225,23 @@
   font-size: 0.88em;
 }
 
+#ttotto-settings .ttotto-inner-setting {
+  margin-top: 7px;
+  padding: 8px 0;
+}
+
+#ttotto-settings #ttotto-custom-exclusions {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in srgb, currentColor 18%, transparent);
+}
+
+#ttotto-settings #ttotto-custom-exclusions > small {
+  display: block;
+  opacity: 0.72;
+  font-size: 0.84em;
+}
+
 #ttotto-settings .ttotto-ban-compose {
   display: grid;
   grid-template-columns: minmax(130px, 1fr) minmax(120px, 1fr) auto;

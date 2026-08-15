@@ -12,7 +12,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.2.0';
+const EXTENSION_VERSION = '1.3.0';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -36,14 +36,21 @@ const DEFAULT_SETTINGS = Object.freeze({
     characterBans: {},
     characterHistory: {},
     crossChatMemoryEnabled: false,
+    excludeAllTaggedBlocks: true,
     excludedTags: '',
     excludedClasses: '',
+});
+const EMPTY_ANALYSIS = Object.freeze({
+    fingerprint: '', messageFingerprint: '', messages: [], localPatterns: [], smartPatterns: [],
+    permanentPatterns: [], patterns: [], prompt: '',
 });
 
 let analysisCache = null;
 let uiReady = false;
 let analysisTimer = null;
 let smartTimer = null;
+let sourceMutationTimer = null;
+let pendingSourceMutationPayload = null;
 let smartRunning = false;
 let smartAbortController = null;
 let smartForcePending = false;
@@ -83,6 +90,7 @@ function getSettings() {
         : {};
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
+    settings.excludeAllTaggedBlocks = settings.excludeAllTaggedBlocks !== false;
     return settings;
 }
 
@@ -168,8 +176,9 @@ function captureOriginalFromEvent(payload) {
     const index = Number(payload);
     if (!message && Number.isInteger(index) && index >= 0) message = chat[index];
     if (!message) message = [...chat].reverse().find((item) => item && !item.is_user && !item.is_system);
-    if (preserveOriginalMessageText(message)) saveCapturedOriginal();
-    return message;
+    const changed = preserveOriginalMessageText(message);
+    if (changed) saveCapturedOriginal();
+    return { message, changed };
 }
 
 function updateBanHitsForMessage(message) {
@@ -375,10 +384,18 @@ export function currentChatCharacterUuids() {
         if (key) avatarKeys.add(key);
     }
 
-    for (const message of Array.isArray(context.chat) ? context.chat : []) {
-        if (!message || message.is_user || message.is_system) continue;
-        const key = resolveCharacterAvatarKey(message, context);
-        if (key) avatarKeys.add(key);
+    // Normally the active solo card or the group's member list is authoritative.
+    // Only fall back to a few recent messages when that metadata is unavailable;
+    // scanning a 1,000+ message chat here made every UI refresh unnecessarily costly.
+    if (!avatarKeys.size) {
+        const chat = Array.isArray(context.chat) ? context.chat : [];
+        for (let index = chat.length - 1, checked = 0; index >= 0 && checked < 50; index -= 1) {
+            const message = chat[index];
+            if (!message || message.is_user || message.is_system) continue;
+            checked += 1;
+            const key = resolveCharacterAvatarKey(message, context);
+            if (key) avatarKeys.add(key);
+        }
     }
 
     let settingsChanged = false;
@@ -531,19 +548,21 @@ function messageMemorySlot(message, index) {
     return `${getChatIdentity()}:${stableId}:${Number(message?.swipe_id) || 0}`;
 }
 
-function collectCurrentAssistantMessages() {
+function collectCurrentAssistantMessages(limit = Number.POSITIVE_INFINITY) {
     const context = getContext();
     const settings = getSettings();
     const chat = Array.isArray(context.chat) ? context.chat : [];
     const candidates = [];
 
-    chat.forEach((message, index) => {
-        if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') return;
-        if (message.extra?.type === 'narrator' || message.extra?.type === 'system') return;
+    const maxMessages = Number.isFinite(limit) ? Math.max(1, Number(limit) || 1) : Number.POSITIVE_INFINITY;
+    for (let index = chat.length - 1; index >= 0 && candidates.length < maxMessages; index -= 1) {
+        const message = chat[index];
+        if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') continue;
+        if (message.extra?.type === 'narrator' || message.extra?.type === 'system') continue;
         const text = messageText(message).trim();
-        if (text.length < 8) return;
+        if (text.length < 8) continue;
         const identity = resolveCharacterIdentity(message, context, settings);
-        if (!identity?.uuid) return;
+        if (!identity?.uuid) continue;
         const speaker = String(message.name || context.name2 || 'Character');
         const key = messageKey(message, index, text);
         candidates.push({
@@ -559,9 +578,9 @@ function collectCurrentAssistantMessages() {
             fromMemory: false,
             capturedAt: Number(new Date(message.send_date).getTime()) || Date.now() + index,
         });
-    });
+    }
 
-    return candidates;
+    return candidates.reverse();
 }
 
 function rememberCurrentMessages(messages) {
@@ -580,7 +599,7 @@ function rememberCurrentMessages(messages) {
             characterAvatarKey: message.characterAvatarKey,
             text: message.text,
             chatIdentity: message.chatIdentity,
-            capturedAt: Date.now(),
+            capturedAt: Number(message.capturedAt) || Date.now(),
         };
         const existing = history.findIndex((item) => (item?.memorySlot && item.memorySlot === record.memorySlot) || item?.key === record.key);
         if (existing >= 0) {
@@ -598,7 +617,11 @@ function rememberCurrentMessages(messages) {
 
 export function collectAssistantMessages({ applyWindow = true, includeMemory = true } = {}) {
     const settings = getSettings();
-    const current = collectCurrentAssistantMessages();
+    const windowSize = Math.max(5, Number(settings.windowSize) || DEFAULT_SETTINGS.windowSize);
+    const currentLimit = applyWindow
+        ? settings.crossChatMemoryEnabled ? Math.max(windowSize, 50) : windowSize
+        : Number.POSITIVE_INFINITY;
+    const current = collectCurrentAssistantMessages(currentLimit);
     rememberCurrentMessages(current);
     let candidates = current;
     if (includeMemory && settings.crossChatMemoryEnabled) {
@@ -615,11 +638,18 @@ export function collectAssistantMessages({ applyWindow = true, includeMemory = t
     }
 
     if (!applyWindow) return candidates;
-    return candidates.slice(-Math.max(5, Number(settings.windowSize) || DEFAULT_SETTINGS.windowSize));
+    return candidates.slice(-windowSize);
 }
 
 function countAssistantMessages() {
-    return collectAssistantMessages({ applyWindow: false, includeMemory: false }).length;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    let total = 0;
+    for (const message of chat) {
+        if (!message || message.is_user || message.is_system) continue;
+        if (message.extra?.type === 'narrator' || message.extra?.type === 'system') continue;
+        total += 1;
+    }
+    return total;
 }
 
 export function shouldRunSmartAnalysis(total, lastTotal, interval, force = false) {
@@ -785,10 +815,15 @@ function smartPatternsForMessages(state, messages) {
         .filter((pattern) => pattern.scope === 'dialogue' ? settings.dialogueEnabled : settings.narrationEnabled);
 }
 
-function analyzeCurrentChat(force = false) {
+function analyzeCurrentChat(force = false, preparedMessages = null) {
+    // All source/settings mutations explicitly invalidate the cache. UI refreshes
+    // can therefore reuse the finished analysis without rescanning message text.
+    if (!force && analysisCache && !preparedMessages) return analysisCache;
     const settings = getSettings();
     const state = getChatState();
-    const messages = collectAssistantMessages();
+    const messages = preparedMessages ?? collectAssistantMessages();
+    const messageFingerprint = fingerprintMessages(messages);
+    if (!force && analysisCache?.messageFingerprint === messageFingerprint) return analysisCache;
     migrateLegacyAllowances(state, messages);
     const settingsKey = [
         settings.windowSize,
@@ -797,6 +832,7 @@ function analyzeCurrentChat(force = false) {
         settings.dialogueEnabled,
         settings.sourceMode,
         settings.crossChatMemoryEnabled,
+        settings.excludeAllTaggedBlocks,
         settings.excludedTags,
         settings.excludedClasses,
     ].join('|');
@@ -815,9 +851,7 @@ function analyzeCurrentChat(force = false) {
         characterUuid: pattern.characterUuid,
         text: `${pattern.key}|${pattern.instruction}`,
     })));
-    const fingerprint = `${fingerprintMessages(messages)}|${settingsKey}|${ignoredFingerprint}|${permanentFingerprint}|${state?.smart?.lastRunAt ?? 0}|${state?.smart?.stale ? 1 : 0}`;
-    if (!force && analysisCache?.fingerprint === fingerprint) return analysisCache;
-
+    const fingerprint = `${messageFingerprint}|${settingsKey}|${ignoredFingerprint}|${permanentFingerprint}|${state?.smart?.lastRunAt ?? 0}|${state?.smart?.stale ? 1 : 0}`;
     const localPatterns = detectPatterns(messages, settings, getContextNames());
     const smartPatterns = smartPatternsForMessages(state, messages);
     const detectedPatterns = mergePatterns(localPatterns, smartPatterns).filter((pattern) => !isPatternIgnored(pattern, state));
@@ -826,6 +860,7 @@ function analyzeCurrentChat(force = false) {
 
     analysisCache = {
         fingerprint,
+        messageFingerprint,
         messages,
         localPatterns,
         smartPatterns,
@@ -869,7 +904,10 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
             toastr.info('이번 생성에서는 또또가 쉬어요. 다음 생성부터 자동으로 다시 켜져요.', '🌀또또');
             return;
         }
-        const analysis = analyzeCurrentChat(true);
+        // A generation can begin before a delayed render/update event arrives.
+        // Recheck only the small recent window; rerun the detector only if it changed.
+        const recentMessages = collectAssistantMessages();
+        const analysis = analyzeCurrentChat(false, recentMessages);
         if (!analysis.prompt) return;
         getContext().setExtensionPrompt(
             PROMPT_KEY,
@@ -1064,9 +1102,16 @@ function scheduleAnalysis({ smart = false, forceSmart = false, delay = 250 } = {
         if (!runtimeActive) return;
         const forceSmartNow = forceSmartOnNextAnalysis;
         forceSmartOnNextAnalysis = false;
+        const settings = getSettings();
+        const state = settings.enabled ? getChatState() : getChatState(false);
+        if (!settings.enabled || !state?.enabled) {
+            invalidateAnalysis();
+            updateUi(EMPTY_ANALYSIS);
+            return;
+        }
         invalidateAnalysis();
-        analyzeCurrentChat(true);
-        updateUi();
+        const analysis = analyzeCurrentChat(true);
+        updateUi(analysis);
         if (smart) scheduleSmartAnalysis({ force: forceSmartNow });
     }, delay);
 }
@@ -1242,8 +1287,7 @@ function ignorePattern(pattern) {
     allowance.ignoredPatterns = allowance.ignoredPatterns.slice(-200);
     saveSettings();
     invalidateAnalysis();
-    analyzeCurrentChat(true);
-    updateUi();
+    updateUi(analyzeCurrentChat(true));
 }
 
 function updateSmartStatus(state) {
@@ -1328,12 +1372,12 @@ function updateBanWarning(state) {
         : '';
 }
 
-function updateUi() {
+function updateUi(analysisOverride = null) {
     if (!uiReady) return;
     const settings = getSettings();
     const state = getChatState(false);
-    const analysis = analyzeCurrentChat(false);
     const enabled = settings.enabled && (state?.enabled ?? false);
+    const analysis = analysisOverride ?? (enabled ? analyzeCurrentChat(false) : analysisCache ?? EMPTY_ANALYSIS);
 
     document.getElementById('ttotto-enabled').checked = settings.enabled;
     document.getElementById('ttotto-chat-enabled').checked = state?.enabled ?? false;
@@ -1346,8 +1390,10 @@ function updateUi() {
     document.getElementById('ttotto-smart-interval').value = String(settings.smartInterval);
     document.getElementById('ttotto-max-patterns').value = String(settings.maxInjectedPatterns);
     document.getElementById('ttotto-cross-memory-enabled').checked = Boolean(settings.crossChatMemoryEnabled);
+    document.getElementById('ttotto-exclude-all-tags').checked = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-excluded-tags').value = settings.excludedTags;
     document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
+    document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
     document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'}`;
 
@@ -1410,7 +1456,7 @@ function bindSetting(id, key, parser = (value) => value) {
         const settings = getSettings();
         settings[key] = parser(value);
         saveSettings();
-        if (['windowSize', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
+        if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
         if (key === 'smartAnalysis') {
             if (settings.smartAnalysis) {
                 scheduleSmartAnalysis({ force: true });
@@ -1420,13 +1466,13 @@ function bindSetting(id, key, parser = (value) => value) {
                 forceSmartOnNextAnalysis = false;
                 smartAbortController?.abort();
             }
-        } else if (['windowSize', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key) && settings.smartAnalysis) {
+        } else if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key) && settings.smartAnalysis) {
             scheduleSmartAnalysis({ force: true });
         }
         invalidateAnalysis();
         if (!settings.enabled) clearInjectedPrompt();
-        analyzeCurrentChat(true);
-        updateUi();
+        const state = settings.enabled ? getChatState() : getChatState(false);
+        updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
     });
 }
 
@@ -1451,6 +1497,7 @@ function bindUi() {
     bindSetting('ttotto-profile', 'smartProfileId', String);
     bindSetting('ttotto-max-patterns', 'maxInjectedPatterns', Number);
     bindSetting('ttotto-cross-memory-enabled', 'crossChatMemoryEnabled', Boolean);
+    bindSetting('ttotto-exclude-all-tags', 'excludeAllTaggedBlocks', Boolean);
     bindSetting('ttotto-excluded-tags', 'excludedTags', String);
     bindSetting('ttotto-excluded-classes', 'excludedClasses', String);
 
@@ -1498,8 +1545,7 @@ function bindUi() {
 
     document.getElementById('ttotto-refresh').addEventListener('click', () => {
         invalidateAnalysis();
-        analyzeCurrentChat(true);
-        updateUi();
+        updateUi(analyzeCurrentChat(true));
         toastr.success('현재 채팅을 다시 분석했어요.', '🌀또또');
     });
 
@@ -1571,8 +1617,9 @@ async function initializeUi() {
     uiReady = true;
     bindUi();
     populateProfiles();
-    analyzeCurrentChat(true);
-    updateUi();
+    const settings = getSettings();
+    const state = settings.enabled ? getChatState() : getChatState(false);
+    updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
 }
 
 function registerEvents() {
@@ -1587,21 +1634,36 @@ function registerEvents() {
     };
 
     listen('MESSAGE_RECEIVED', (payload) => {
-        const message = captureOriginalFromEvent(payload);
+        clearTimeout(sourceMutationTimer);
+        sourceMutationTimer = null;
+        pendingSourceMutationPayload = null;
+        const { message } = captureOriginalFromEvent(payload);
         updateBanHitsForMessage(message);
         scheduleAnalysis({ smart: true, delay: 350 });
     });
-    listen('CHARACTER_MESSAGE_RENDERED', () => scheduleAnalysis({ smart: true, delay: 650 }));
     const handleHistoryMutation = () => {
         markSmartResultsStale();
         scheduleAnalysis({ smart: true, forceSmart: true, delay: 250 });
     };
     const handleSourceMutation = (payload) => {
-        captureOriginalFromEvent(payload);
+        const { changed } = captureOriginalFromEvent(payload);
+        if (!changed) return;
         handleHistoryMutation();
     };
+    const scheduleSourceMutation = (payload) => {
+        pendingSourceMutationPayload = payload;
+        clearTimeout(sourceMutationTimer);
+        sourceMutationTimer = setTimeout(() => {
+            const pending = pendingSourceMutationPayload;
+            pendingSourceMutationPayload = null;
+            sourceMutationTimer = null;
+            if (runtimeActive) handleSourceMutation(pending);
+        }, 450);
+    };
     listen('MESSAGE_EDITED', handleSourceMutation);
-    listen('MESSAGE_UPDATED', handleSourceMutation);
+    // MESSAGE_UPDATED can fire repeatedly while another extension is rendering
+    // or while text is streaming. Collapse the burst and ignore display-only updates.
+    listen('MESSAGE_UPDATED', scheduleSourceMutation);
     listen('MESSAGE_DELETED', handleHistoryMutation);
     listen('MESSAGE_SWIPED', handleSourceMutation);
     listen('GENERATION_ENDED', clearInjectedPrompt);
@@ -1609,6 +1671,9 @@ function registerEvents() {
     listen('CHAT_CHANGED', () => {
         smartAbortController?.abort();
         clearTimeout(smartTimer);
+        clearTimeout(sourceMutationTimer);
+        sourceMutationTimer = null;
+        pendingSourceMutationPayload = null;
         smartForcePending = false;
         forceSmartOnNextAnalysis = false;
         clearInjectedPrompt();
@@ -1649,6 +1714,9 @@ export function onDisable() {
     runtimeActive = false;
     clearTimeout(analysisTimer);
     clearTimeout(smartTimer);
+    clearTimeout(sourceMutationTimer);
+    sourceMutationTimer = null;
+    pendingSourceMutationPayload = null;
     smartForcePending = false;
     forceSmartOnNextAnalysis = false;
     smartAbortController?.abort();
