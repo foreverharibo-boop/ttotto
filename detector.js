@@ -178,7 +178,7 @@ function parseExclusionList(value, kind) {
         .map((item) => item.toLocaleLowerCase()))].slice(0, 30);
 }
 
-function stripNonProse(text, exclusions = {}) {
+export function stripNonProse(text, exclusions = {}, { clip = true } = {}) {
     let clean = String(text ?? '')
         // User info panels can exist either before regex rendering or as a rendered HTML card.
         .replace(/<info[_-]?panel\b[^>]*>[\s\S]*?<\/info[_-]?panel\s*>/gi, ' ')
@@ -196,7 +196,9 @@ function stripNonProse(text, exclusions = {}) {
     if (exclusions.excludeAllTaggedBlocks !== false) {
         clean = stripAllPairedTagBlocks(clean);
     }
-    clean = clipMessage(clean);
+    // Analysis clips long texts for local n-gram performance; storage callers
+    // can opt out to keep the full stripped prose.
+    if (clip) clean = clipMessage(clean);
 
     return clean
         .replace(/<think>[\s\S]*?<\/think>/gi, ' ')

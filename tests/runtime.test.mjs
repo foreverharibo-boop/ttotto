@@ -389,3 +389,70 @@ test('수천 개짜리 긴 채팅에서도 최근 분석 범위만 원문으로 
     assert.ok(textReads < 150, `최근 20개 대신 너무 많은 원문을 읽음: ${textReads}`);
     module.onDisable();
 });
+
+test('지난 채팅 기억은 제외 블록을 걷어낸 본문만 저장하고 구버전 기억도 정리한다', async () => {
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {
+            ttotto: {
+                enabled: true, windowSize: 20, sensitivity: 'normal',
+                narrationEnabled: true, dialogueEnabled: true, smartAnalysis: false,
+                characterUuids: { 'peter.png': 'uuid-peter' },
+                characterAllowances: {}, characterBans: {},
+                characterHistory: {
+                    'uuid-peter': [
+                        {
+                            key: 'legacy-1', memorySlot: 'legacy-slot-1', speaker: 'Peter', characterUuid: 'uuid-peter',
+                            text: '<Info_panel>[Date: 2026.07.01]</Info_panel>\nHe waited by the harbor until sunset.',
+                            chatIdentity: 'old-chat', capturedAt: 100,
+                        },
+                        {
+                            key: 'legacy-2', memorySlot: 'legacy-slot-2', speaker: 'Peter', characterUuid: 'uuid-peter',
+                            text: '<Status_box>[HP: 100]</Status_box>',
+                            chatIdentity: 'old-chat', capturedAt: 200,
+                        },
+                    ],
+                },
+                crossChatMemoryEnabled: true,
+                excludeAllTaggedBlocks: true,
+            },
+        },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'memory-strip', groupId: null, characterId: 0,
+        name1: 'User', name2: 'Peter', groups: [],
+        characters: [{ name: 'Peter', avatar: 'peter.png' }],
+        chat: [
+            {
+                mes: '<Info_panel>[Date: 2026.08.16]\n[Location: Seoul]</Info_panel>\n<div class="status-card"><span>HP 80</span></div>\nHe closed the door quietly behind him.',
+                name: 'Peter', send_date: 1,
+            },
+            {
+                mes: `Long reply. ${'He walked through the endless corridor without a word. '.repeat(200)}`,
+                name: 'Peter', send_date: 2,
+            },
+        ],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?memstrip=${Date.now()}`);
+
+    module.migrateStoredMemoryOnce();
+    const migrated = context.extensionSettings.ttotto.characterHistory['uuid-peter'];
+    assert.equal(migrated.length, 1);
+    assert.doesNotMatch(migrated[0].text, /Info_panel|2026\.07\.01/);
+    assert.match(migrated[0].text, /waited by the harbor/);
+    assert.equal(context.extensionSettings.ttotto.memoryStripVersion, 1);
+
+    module.collectAssistantMessages();
+    const stored = context.extensionSettings.ttotto.characterHistory['uuid-peter'];
+    assert.equal(stored.length, 3);
+    const panelMessage = stored.find((item) => /closed the door quietly/.test(item.text));
+    assert.ok(panelMessage);
+    assert.doesNotMatch(panelMessage.text, /Info_panel|Seoul|status-card|HP 80/);
+    const longMessage = stored.find((item) => /Long reply/.test(item.text));
+    assert.ok(longMessage.text.length > 9000, '저장 시 글자수를 자르면 안 됨');
+    assert.doesNotMatch(longMessage.text, /…/);
+    module.onDisable();
+});

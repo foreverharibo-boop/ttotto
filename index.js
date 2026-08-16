@@ -5,6 +5,7 @@ import {
     mergePatterns,
     normalizeSmartPattern,
     splitDialogueAndNarration,
+    stripNonProse,
 } from './detector.js';
 
 const MODULE_NAME = 'ttotto';
@@ -12,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.3.2';
+const EXTENSION_VERSION = '1.3.3';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -589,6 +590,13 @@ function rememberCurrentMessages(messages) {
     let changed = false;
     for (const message of messages) {
         const uuid = message.characterUuid;
+        // Store only the prose the detector would actually analyze: the same
+        // exclusion rules (info panels, tag/HTML blocks, custom tags/classes)
+        // are applied before the text is persisted, so settings.json never
+        // carries decorative HTML that every later analysis would strip again
+        // anyway. No length limit is applied to the stored prose.
+        const storedText = stripNonProse(message.text, settings, { clip: false });
+        if (storedText.length < 8) continue;
         const history = Array.isArray(settings.characterHistory[uuid]) ? settings.characterHistory[uuid] : [];
         const record = {
             id: message.id,
@@ -597,7 +605,7 @@ function rememberCurrentMessages(messages) {
             speaker: message.speaker,
             characterUuid: uuid,
             characterAvatarKey: message.characterAvatarKey,
-            text: message.text,
+            text: storedText,
             chatIdentity: message.chatIdentity,
             capturedAt: Number(message.capturedAt) || Date.now(),
         };
@@ -613,6 +621,22 @@ function rememberCurrentMessages(messages) {
         settings.characterHistory[uuid] = history.slice(-50);
     }
     if (changed) saveSettings();
+}
+
+export function migrateStoredMemoryOnce() {
+    // One-time cleanup for memories saved before v1.3.3, which stored the raw
+    // message text including decorative HTML blocks. Re-strips them with the
+    // current exclusion settings and drops entries that were decoration only.
+    const settings = getSettings();
+    if (Number(settings.memoryStripVersion) >= 1) return;
+    for (const [uuid, history] of Object.entries(settings.characterHistory)) {
+        settings.characterHistory[uuid] = (Array.isArray(history) ? history : [])
+            .map((item) => ({ ...item, text: stripNonProse(String(item?.text ?? ''), settings, { clip: false }) }))
+            .filter((item) => item.text.length >= 8)
+            .slice(-50);
+    }
+    settings.memoryStripVersion = 1;
+    saveSettings();
 }
 
 export function collectAssistantMessages({ applyWindow = true, includeMemory = true } = {}) {
@@ -1699,6 +1723,7 @@ function unregisterEvents() {
 async function initialize() {
     runtimeActive = true;
     getSettings();
+    migrateStoredMemoryOnce();
     registerEvents();
     await initializeUi();
     console.log(`${LOG_PREFIX} v${EXTENSION_VERSION} 로드 완료`);
