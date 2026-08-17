@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.7.2';
+const EXTENSION_VERSION = '1.7.3';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -2080,16 +2080,17 @@ function ensureDragBanButton() {
             event.stopPropagation();
         }, { passive: false });
     }
-    termChip.addEventListener('click', (event) => {
+    // 모바일: touchstart를 preventDefault하면 브라우저가 click을 합성하지 않으므로
+    // 칩 동작은 touchend에서 직접 처리한다 (touchend preventDefault → click 중복 발생 없음)
+    const activate = (handler) => (event) => {
         event.preventDefault();
         event.stopPropagation();
-        void handleDragBanClick();
-    });
-    structureChip.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void handleDragStructureClick();
-    });
+        void handler();
+    };
+    for (const type of ['click', 'touchend']) {
+        termChip.addEventListener(type, activate(handleDragBanClick), { passive: false });
+        structureChip.addEventListener(type, activate(handleDragStructureClick), { passive: false });
+    }
     return dragBanButton;
 }
 
@@ -2153,7 +2154,7 @@ function maybeShowDragBanButton(clientX, clientY) {
 
 function onDragBanPointerUp(event) {
     if (!runtimeActive) return;
-    if (event.target === dragBanButton) return;
+    if (dragBanButton && (event.target === dragBanButton || dragBanButton.contains(event.target))) return;
     const x = event.clientX ?? event.changedTouches?.[0]?.clientX;
     const y = event.clientY ?? event.changedTouches?.[0]?.clientY;
     // selection이 확정된 뒤에 읽도록 한 박자 늦춘다 (모바일 롱프레스 선택 포함)
