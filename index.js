@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.5.2';
+const EXTENSION_VERSION = '1.6.2';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -29,7 +29,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
-    smartMaxTokens: 900,
+    dragAiProfile: '', // '' = 정밀 분석 설정 따름, 'off' = 사용 안 함, 그 외 = 연결 프로필 id
+    smartMaxTokens: 1000000, // 추론형 모델의 생각 토큰 때문에 잘리지 않도록 사실상 무제한 (백만 안전선)
     maxInjectedPatterns: 6,
     sourceMode: 'original',
     characterUuids: {},
@@ -96,6 +97,8 @@ function getSettings() {
         : {};
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
+    // 구버전(900토큰 상한) 마이그레이션 — 정밀 분석 응답 잘림 방지
+    if (Number(settings.smartMaxTokens) < 1000000) settings.smartMaxTokens = 1000000;
     settings.excludeAllTaggedBlocks = settings.excludeAllTaggedBlocks !== false;
     return settings;
 }
@@ -1598,6 +1601,34 @@ function populateProfiles() {
         select.append(missing);
     }
     select.value = currentValue;
+
+    // 드래그 금지 보조 AI 연결 선택
+    const dragSelect = document.getElementById('ttotto-drag-ai-profile');
+    if (dragSelect) {
+        const dragValue = String(settings.dragAiProfile ?? '');
+        dragSelect.replaceChildren();
+        const follow = document.createElement('option');
+        follow.value = '';
+        follow.textContent = '정밀 분석 설정 따름 (기본)';
+        const off = document.createElement('option');
+        off.value = 'off';
+        off.textContent = '사용 안 함 — 수동 폴백만';
+        dragSelect.append(follow, off);
+        for (const option of [...select.options]) {
+            if (!option.value || option.value === 'off') continue;
+            const clone = document.createElement('option');
+            clone.value = option.value;
+            clone.textContent = option.textContent;
+            dragSelect.append(clone);
+        }
+        if (dragValue && dragValue !== 'off' && ![...dragSelect.options].some((option) => option.value === dragValue)) {
+            const missing = document.createElement('option');
+            missing.value = dragValue;
+            missing.textContent = '저장된 연결 프로필을 찾을 수 없음';
+            dragSelect.append(missing);
+        }
+        dragSelect.value = dragValue;
+    }
 }
 
 function bindSetting(id, key, parser = (value) => value) {
@@ -1646,6 +1677,7 @@ function bindUi() {
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);
+    bindSetting('ttotto-drag-ai-profile', 'dragAiProfile', String);
     bindSetting('ttotto-max-patterns', 'maxInjectedPatterns', Number);
     bindSetting('ttotto-cross-memory-enabled', 'crossChatMemoryEnabled', Boolean);
     bindSetting('ttotto-exclude-all-tags', 'excludeAllTaggedBlocks', Boolean);
@@ -1815,6 +1847,9 @@ function bindUi() {
 let dragBanButton = null;
 let dragBanContext = null;
 let dragBanHandlersAttached = false;
+let dragBanSelectionTimer = null;
+// 추론형 모델이 생각 토큰을 쓰다 JSON이 잘리지 않도록 상한은 사실상 무제한 (백만 안전선)
+const DRAG_AI_MAX_TOKENS = 1000000;
 
 const DRAG_BAN_MENU_CSS = [
     'position:fixed !important', 'z-index:99999 !important', 'transform:none !important',
@@ -1829,15 +1864,16 @@ const DRAG_BAN_CHIP_CSS = [
 ].join('; ');
 
 function getDragSelectionInfo() {
-    // 1) 메시지 수정 모드의 textarea — 편집창 내용은 원문
+    // 1) 메시지 수정 모드의 textarea — 편집창 내용은 원문.
+    //    단, 채팅 입력창 같은 다른 textarea가 포커스를 물고 있어도 본문 selection 확인은 계속한다.
     const active = document.activeElement;
     if (active && active.tagName === 'TEXTAREA') {
         const mesBlock = active.closest('.mes');
-        if (!mesBlock) return null;
         const start = active.selectionStart ?? 0;
         const end = active.selectionEnd ?? 0;
-        if (end <= start) return null;
-        return { rawTerm: active.value.slice(start, end), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: true };
+        if (mesBlock && end > start) {
+            return { rawTerm: active.value.slice(start, end), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: true };
+        }
     }
     // 2) 일반 메시지 본문 selection
     const selection = window.getSelection?.();
@@ -1937,10 +1973,15 @@ function maybeShowDragBanButton(clientX, clientY) {
             left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
             top = rect.bottom + 8;
         }
+    } else if (Number.isFinite(Number(clientX)) && Number.isFinite(Number(clientY))) {
+        // 수정 모드(textarea) + 포인터 좌표가 있으면 포인터 오른쪽에
+        left = Math.min(Number(clientX) + 12, window.innerWidth - menuWidth - 8);
+        top = Number(clientY) - 16;
     } else {
-        // 수정 모드(textarea)는 선택 사각형을 못 구하므로 포인터 오른쪽에
-        left = Math.min((Number(clientX) || 40) + 12, window.innerWidth - menuWidth - 8);
-        top = (Number(clientY) || 90) - 16;
+        // 좌표 없이 selectionchange로 호출된 경우(모바일): 편집창의 오른쪽 위 모서리에
+        const activeRect = document.activeElement?.getBoundingClientRect?.();
+        left = activeRect ? Math.max(8, activeRect.right - menuWidth - 8) : window.innerWidth - menuWidth - 16;
+        top = activeRect ? Math.max(8, activeRect.top - 44) : 80;
     }
     top = Math.max(8, Math.min(top, window.innerHeight - 48));
     menu.style.cssText = `left:${left}px; top:${top}px; ${DRAG_BAN_MENU_CSS}`;
@@ -1955,10 +1996,26 @@ function onDragBanPointerUp(event) {
     setTimeout(() => maybeShowDragBanButton(x, y), 60);
 }
 
+// 모바일 핵심 경로: 롱프레스 선택은 touchend 시점에 selection이 확정 안 된 경우가 많아서,
+// selectionchange 자체를 (디바운스해서) 표시 트리거로 쓴다. 위치는 선택 영역 사각형 기준이라 좌표가 필요 없다.
 function onDragBanSelectionChange() {
-    if (!dragBanButton || dragBanButton.style.display === 'none') return;
-    const info = getDragSelectionInfo();
-    if (!info || !String(info.rawTerm ?? '').trim()) hideDragBanButton();
+    if (!runtimeActive) return;
+    clearTimeout(dragBanSelectionTimer);
+    dragBanSelectionTimer = setTimeout(() => {
+        const info = getDragSelectionInfo();
+        if (!info || !String(info.rawTerm ?? '').trim()) {
+            hideDragBanButton();
+            return;
+        }
+        maybeShowDragBanButton();
+    }, 250);
+}
+
+// 드래그 보조 AI 연결 결정: null = 사용 안 함, '' = 현재 연결, 그 외 = 프로필 id
+function resolveDragAiProfile(settings) {
+    const pref = String(settings.dragAiProfile ?? '').trim();
+    if (pref === 'off') return null;
+    return pref || String(settings.smartProfileId ?? '').trim();
 }
 
 async function requestBanTrace(originalText, translatedSelection) {
@@ -1971,20 +2028,24 @@ async function requestBanTrace(originalText, translatedSelection) {
         },
         { role: 'user', content: `ORIGINAL:\n${originalText.slice(0, 6000)}\n\nSELECTED (translated):\n${translatedSelection}` },
     ];
-    const profileId = String(settings.smartProfileId ?? '').trim();
+    const profileId = resolveDragAiProfile(settings);
+    if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
     let raw;
     if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
-        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, 200, { stream: false, extractData: true });
+        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, DRAG_AI_MAX_TOKENS, { stream: false, extractData: true });
         raw = typeof result === 'string' ? result : result?.content;
     } else if (typeof context.generateRaw === 'function') {
-        raw = await context.generateRaw({ prompt, responseLength: 200, trimNames: false });
+        raw = await context.generateRaw({ prompt, responseLength: DRAG_AI_MAX_TOKENS, trimNames: false });
     } else {
         throw new Error('보조 AI를 사용할 수 없어요.');
     }
     const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error('역추적 응답을 해석하지 못했어요.');
+    if (start < 0 || end <= start) {
+        console.warn(`${LOG_PREFIX} 역추적 원시 응답:`, String(raw ?? '(빈 응답)').slice(0, 500));
+        throw new Error(clean ? '역추적 응답에 JSON이 없어요.' : '역추적 응답이 비어 있어요 (연결·프로필을 확인해 주세요).');
+    }
     return cleanBanTerm(JSON.parse(clean.slice(start, end + 1))?.match ?? '');
 }
 
@@ -2024,20 +2085,24 @@ async function requestStructureJson(mode, text) {
         { role: 'system', content: system },
         { role: 'user', content: String(text).slice(0, 1200) },
     ];
-    const profileId = String(settings.smartProfileId ?? '').trim();
+    const profileId = resolveDragAiProfile(settings);
+    if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
     let raw;
     if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
-        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, 300, { stream: false, extractData: true });
+        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, DRAG_AI_MAX_TOKENS, { stream: false, extractData: true });
         raw = typeof result === 'string' ? result : result?.content;
     } else if (typeof context.generateRaw === 'function') {
-        raw = await context.generateRaw({ prompt, responseLength: 300, trimNames: false });
+        raw = await context.generateRaw({ prompt, responseLength: DRAG_AI_MAX_TOKENS, trimNames: false });
     } else {
         throw new Error('보조 AI를 사용할 수 없어요.');
     }
     const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error('구조 분석 응답을 해석하지 못했어요.');
+    if (start < 0 || end <= start) {
+        console.warn(`${LOG_PREFIX} 구조 분석 원시 응답:`, String(raw ?? '(빈 응답)').slice(0, 500));
+        throw new Error(clean ? '구조 분석 응답에 JSON이 없어요.' : '구조 분석 응답이 비어 있어요 (연결·프로필을 확인해 주세요).');
+    }
     const parsed = JSON.parse(clean.slice(start, end + 1));
     const label = String(parsed?.label ?? '').trim().slice(0, 40);
     const instruction = String(parsed?.instruction ?? '').trim().slice(0, 300);
@@ -2096,6 +2161,7 @@ async function handleDragStructureClick() {
         if (ok) registerStructureBan(uuid, { ...analyzed, example });
     } catch (error) {
         console.warn(`${LOG_PREFIX} 구조 분석 실패 — 폴백 등록`, error);
+        toastr.warning(`구조 분석 실패: ${error?.message ?? error}`, '🌀또또');
         const fallback = fallbackStructureBan('example', example);
         const ok = await confirmAction('🌀또또 · 구조 금지 (기본형)', `보조 AI 분석 없이 예시 기반으로 등록할까요?\n\n"${example.slice(0, 120)}"`);
         if (ok) registerStructureBan(uuid, { ...fallback, example });
@@ -2148,6 +2214,7 @@ async function handleDragBanClick() {
         throw new Error('원문에서 대응 표현을 찾지 못했어요.');
     } catch (error) {
         console.warn(`${LOG_PREFIX} 원문 역추적 실패 — 수동 입력 폴백`, error);
+        toastr.warning(`원문 역추적 실패: ${error?.message ?? error}`, '🌀또또');
         const manual = window.prompt(
             `원문 표현을 직접 입력해 주세요 (역추적 실패).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
             '',
@@ -2170,6 +2237,7 @@ function detachDragBanHandlers() {
     document.removeEventListener('touchend', onDragBanPointerUp);
     document.removeEventListener('selectionchange', onDragBanSelectionChange);
     dragBanHandlersAttached = false;
+    clearTimeout(dragBanSelectionTimer);
     hideDragBanButton();
 }
 
