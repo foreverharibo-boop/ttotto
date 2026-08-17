@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.6.4';
+const EXTENSION_VERSION = '1.7.0';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -30,6 +30,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartInterval: 3,
     smartProfileId: '',
     dragAiProfile: '', // '' = 정밀 분석 설정 따름, 'off' = 사용 안 함, 그 외 = 연결 프로필 id
+    dragStructureAi: true, // 구조 금지에 AI 분석 사용 — 끄면 드래그한 문장을 예시로 즉시 등록
     smartMaxTokens: 20000, // 상한일 뿐 실제 소모와 무관 — 추론 토큰 포함해도 넉넉하고, 웬만한 백엔드 상한보다 낮아 거부되지 않음
     maxInjectedPatterns: 6,
     sourceMode: 'original',
@@ -1555,6 +1556,8 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-sensitivity').value = settings.sensitivity;
     document.getElementById('ttotto-narration-enabled').checked = settings.narrationEnabled;
     document.getElementById('ttotto-dialogue-enabled').checked = settings.dialogueEnabled;
+    const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
+    if (structureAiCheckbox) structureAiCheckbox.checked = Boolean(settings.dragStructureAi);
     document.getElementById('ttotto-smart-enabled').checked = settings.smartAnalysis;
     document.getElementById('ttotto-smart-interval').value = String(settings.smartInterval);
     document.getElementById('ttotto-max-patterns').value = String(settings.maxInjectedPatterns);
@@ -1693,6 +1696,7 @@ function bindUi() {
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);
     bindSetting('ttotto-drag-ai-profile', 'dragAiProfile', String);
+    bindSetting('ttotto-structure-ai', 'dragStructureAi', Boolean);
     bindSetting('ttotto-max-patterns', 'maxInjectedPatterns', Number);
     bindSetting('ttotto-cross-memory-enabled', 'crossChatMemoryEnabled', Boolean);
     bindSetting('ttotto-exclude-all-tags', 'excludeAllTaggedBlocks', Boolean);
@@ -1738,12 +1742,17 @@ function bindUi() {
             return;
         }
         let payload;
-        try {
-            toastr.info('구조 지시문을 만드는 중…', '🌀또또');
-            payload = await requestStructureJson('description', description);
-        } catch (error) {
-            console.warn(`${LOG_PREFIX} 구조 지시문 생성 실패 — 폴백 사용`, error);
+        const structureSettings = getSettings();
+        if (!structureSettings.dragStructureAi || resolveDragAiProfile(structureSettings) === null) {
             payload = fallbackStructureBan('description', description);
+        } else {
+            try {
+                toastr.info('구조 지시문을 만드는 중…', '🌀또또');
+                payload = await requestStructureJson('description', description);
+            } catch (error) {
+                console.warn(`${LOG_PREFIX} 구조 지시문 생성 실패 — 폴백 사용`, error);
+                payload = fallbackStructureBan('description', description);
+            }
         }
         input.value = '';
         registerStructureBan(uuid, { ...payload, example: '' });
@@ -2125,6 +2134,43 @@ async function requestStructureJson(mode, text) {
     return { label: label || '구조 금지', instruction };
 }
 
+// ── 무호출 자체 구조 분석 ──
+// AI 없이 정규식 규칙으로 문장의 구조 특징을 찾아낸다. 감지된 특징은 팝업으로 보여주고,
+// 지시문에는 특징을 영어로 명시해 예시-단독 방식보다 명중률을 높인다.
+const LOCAL_STRUCTURE_RULES = [
+    { ko: '대조 구문 (not A but B / ~이 아니라)', en: 'contrast framing that negates one thing to assert another (not X but Y)', re: /not\s+(?:a|an|the\s+)?\w[^.,;]{0,50}?\bbut\b|(?:이|가)\s*아니라|라기보다/i },
+    { ko: '연결어미로 절을 길게 잇기 (~하며/~면서)', en: 'chaining multiple clauses with sequential connectives in a single sentence', re: /[가-힣](?:며|면서|고서|ㄴ\s*채)\s[^.!?]*?[가-힣](?:며|면서|고서|ㄴ\s*채)\s/ },
+    { ko: '평서형 ~다 종결', en: 'a flat declarative -da sentence ending', re: /[가-힣]다[.!?…"'」]*\s*$/ },
+    { ko: '세 요소 나란히 나열 (triplet)', en: 'listing exactly three parallel items in a row', re: /[^,，]{2,30}[,，]\s*[^,，]{2,30}[,，]\s*(?:and\s+|그리고\s+|그\s*리고\s+)?[^,，]{2,30}/ },
+    { ko: '분사구·부사절로 문장 시작', en: 'opening the sentence with a participial or adverbial phrase', re: /^\s*(?:[A-Z][a-z]+ing\b|[가-힣]{1,8}(?:하며|하듯|한\s*채),)/ },
+    { ko: '직유 비유 (~처럼 / like / as if)', en: 'a simile comparison (like / as if / ~cheoreom)', re: /처럼|듯이|듯한|like\s+an?\s|as\s+if\s/i },
+    { ko: '대시(—) 삽입', en: 'an em-dash interruption or appositive', re: /—|――|--/ },
+    { ko: '말줄임(…) 여운', en: 'a trailing ellipsis for lingering effect', re: /…|\.\.\./ },
+    { ko: '의문형 종결', en: 'ending on a (rhetorical) question', re: /\?["'”」]?\s*$/ },
+    { ko: '대사 뒤 짧은 지문 붙이기', en: 'a quoted line immediately followed by a short action beat', re: /["“][^"”]{2,80}["”][^"”]{1,45}[.!?…]?\s*$/ },
+];
+
+function analyzeStructureLocally(text) {
+    const source = String(text ?? '').trim();
+    const features = LOCAL_STRUCTURE_RULES.filter((rule) => rule.re.test(source));
+    // 짧은 단문 연타 (규칙표 밖의 통계형 특징)
+    const sentences = source.split(/(?<=[.!?…])\s+/).filter((part) => part.trim().length > 1);
+    if (sentences.length >= 3 && sentences.every((part) => part.length <= 34)) {
+        features.push({ ko: '짧은 단문 연타', en: 'a burst of short staccato sentences' });
+    }
+    const excerpt = source.slice(0, 160);
+    const clauses = features.map((feature) => feature.en);
+    const instruction = (clauses.length
+        ? `Avoid reusing this sentence construction: ${clauses.join('; ')}. Do not write structurally parallel variants of: "${excerpt}".`
+        : `Avoid reusing the narrative structure exemplified by: "${excerpt}". Do not produce structurally parallel rewrites of it.`)
+        + ' Vary sentence construction, rhythm, and the ordering of beats; ban only the construction, never content or characterization.';
+    return {
+        features: features.map((feature) => feature.ko),
+        label: features.length ? `구조 금지 · ${features[0].ko}` : `구조 금지 · ${excerpt.slice(0, 24)}…`,
+        instruction: instruction.slice(0, 500),
+    };
+}
+
 // AI 없이도 동작하는 구조 금지 폴백
 function fallbackStructureBan(mode, text) {
     const excerpt = String(text).trim().slice(0, 160);
@@ -2168,6 +2214,17 @@ async function handleDragStructureClick() {
         return;
     }
     const example = ctx.rawTerm;
+    // AI 분석을 껐거나(설정) 보조 AI 자체가 꺼져 있으면: 자체 규칙 분석(무호출) → 확인 팝업 → 등록
+    const settings = getSettings();
+    if (!settings.dragStructureAi || resolveDragAiProfile(settings) === null) {
+        const local = analyzeStructureLocally(example);
+        const message = local.features.length
+            ? `자체 분석(무호출)으로 이런 구조 특징을 찾았어요:\n\n${local.features.map((feature) => `• ${feature}`).join('\n')}\n\n이 구조를 금지할까요?`
+            : `뚜렷한 구조 특징을 못 찾았어요. 이 문장을 예시로 삼는 기본형으로 등록할까요?\n\n"${example.slice(0, 120)}"`;
+        const ok = await confirmAction('🌀또또 · 구조 금지 (자체 분석)', message);
+        if (ok) registerStructureBan(uuid, { label: local.label, instruction: local.instruction, example });
+        return;
+    }
     // 구조 분석은 번역문이어도 무방 — AI가 구조를 언어 중립적인 영어 지시로 변환한다
     try {
         toastr.info('이 문장의 서술 구조를 분석하는 중…', '🌀또또');
