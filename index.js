@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.6.2';
+const EXTENSION_VERSION = '1.6.4';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -30,7 +30,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartInterval: 3,
     smartProfileId: '',
     dragAiProfile: '', // '' = 정밀 분석 설정 따름, 'off' = 사용 안 함, 그 외 = 연결 프로필 id
-    smartMaxTokens: 1000000, // 추론형 모델의 생각 토큰 때문에 잘리지 않도록 사실상 무제한 (백만 안전선)
+    smartMaxTokens: 20000, // 상한일 뿐 실제 소모와 무관 — 추론 토큰 포함해도 넉넉하고, 웬만한 백엔드 상한보다 낮아 거부되지 않음
     maxInjectedPatterns: 6,
     sourceMode: 'original',
     characterUuids: {},
@@ -97,8 +97,9 @@ function getSettings() {
         : {};
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
-    // 구버전(900토큰 상한) 마이그레이션 — 정밀 분석 응답 잘림 방지
-    if (Number(settings.smartMaxTokens) < 1000000) settings.smartMaxTokens = 1000000;
+    // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
+    const smartTokens = Number(settings.smartMaxTokens);
+    if (!(smartTokens >= 2000 && smartTokens <= 65536)) settings.smartMaxTokens = 20000;
     settings.excludeAllTaggedBlocks = settings.excludeAllTaggedBlocks !== false;
     return settings;
 }
@@ -1078,37 +1079,51 @@ function parseSmartResponse(text, messages) {
     }).filter(Boolean).slice(0, 6);
 }
 
-async function requestSmartAnalysis(messages, signal) {
+// 백엔드가 토큰 상한 값을 거부한 오류인지 (Gemini: "supported range is from 1 to 65537" 등)
+function isTokenLimitError(error) {
+    return /max_?output_?tokens|max_tokens|maxOutputTokens|supported range|output token/i.test(String(error?.message ?? error ?? ''));
+}
+
+// 공통 보조 AI 호출 — 상한을 거부하는 백엔드를 만나면 더 작은 값으로 자동 재시도
+async function sendAiRequest(profileId, prompt, maxTokens, signal) {
     const context = getContext();
+    const ladder = [...new Set([maxTokens, 20000, 8000, 4000].filter((value) => Number(value) > 0))];
+    let lastError;
+    for (const tokens of ladder) {
+        try {
+            if (profileId) {
+                const service = context.ConnectionManagerRequestService;
+                if (!service || typeof service.sendRequest !== 'function') {
+                    throw new Error('Connection Profiles 서비스를 사용할 수 없습니다.');
+                }
+                const result = await service.sendRequest(profileId, prompt, tokens, {
+                    stream: false,
+                    signal,
+                    extractData: true,
+                });
+                if (typeof result === 'string') return result;
+                if (result && typeof result.content === 'string') return result.content;
+                throw new Error('연결 프로필이 텍스트를 반환하지 않았습니다.');
+            }
+            if (typeof context.generateRaw !== 'function') {
+                throw new Error('현재 연결을 통한 백그라운드 생성을 사용할 수 없습니다.');
+            }
+            return await context.generateRaw({ prompt, responseLength: tokens, trimNames: false, signal });
+        } catch (error) {
+            lastError = error;
+            if (error?.name === 'AbortError' || !isTokenLimitError(error)) throw error;
+            console.warn(`${LOG_PREFIX} 토큰 상한 ${tokens}이(가) 거부됨 — 더 작은 값으로 재시도합니다.`);
+        }
+    }
+    throw lastError;
+}
+
+async function requestSmartAnalysis(messages, signal) {
     const settings = getSettings();
     const prompt = smartPromptMessages(messages);
     const profileId = String(settings.smartProfileId ?? '').trim();
     const maxTokens = Number(settings.smartMaxTokens) || DEFAULT_SETTINGS.smartMaxTokens;
-
-    if (profileId) {
-        const service = context.ConnectionManagerRequestService;
-        if (!service || typeof service.sendRequest !== 'function') {
-            throw new Error('Connection Profiles 서비스를 사용할 수 없습니다.');
-        }
-        const result = await service.sendRequest(profileId, prompt, maxTokens, {
-            stream: false,
-            signal,
-            extractData: true,
-        });
-        if (typeof result === 'string') return result;
-        if (result && typeof result.content === 'string') return result.content;
-        throw new Error('정밀 분석 연결 프로필이 텍스트를 반환하지 않았습니다.');
-    }
-
-    if (typeof context.generateRaw !== 'function') {
-        throw new Error('현재 연결을 통한 백그라운드 생성을 사용할 수 없습니다.');
-    }
-    return context.generateRaw({
-        prompt,
-        responseLength: maxTokens,
-        trimNames: false,
-        signal,
-    });
+    return sendAiRequest(profileId, prompt, maxTokens, signal);
 }
 
 async function runSmartAnalysis({ manual = false } = {}) {
@@ -1848,8 +1863,8 @@ let dragBanButton = null;
 let dragBanContext = null;
 let dragBanHandlersAttached = false;
 let dragBanSelectionTimer = null;
-// 추론형 모델이 생각 토큰을 쓰다 JSON이 잘리지 않도록 상한은 사실상 무제한 (백만 안전선)
-const DRAG_AI_MAX_TOKENS = 1000000;
+// 추론형 모델이 생각 토큰을 쓰다 JSON이 잘리지 않도록 넉넉하게 — Gemini 허용 최대치 (상한일 뿐 실제 소모와 무관)
+const DRAG_AI_MAX_TOKENS = 20000;
 
 const DRAG_BAN_MENU_CSS = [
     'position:fixed !important', 'z-index:99999 !important', 'transform:none !important',
@@ -1969,9 +1984,10 @@ function maybeShowDragBanButton(clientX, clientY) {
         left = rect.right + 8;
         top = rect.top + rect.height / 2 - 16;
         if (left > window.innerWidth - menuWidth - 8) {
-            // 오른쪽 공간이 없으면 선택 영역 아래로
-            left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-            top = rect.bottom + 8;
+            // 오른쪽 공간이 없으면 선택 영역 아래, 오른쪽 정렬로
+            // (번역기 재번역 버튼 등 왼쪽에 붙는 플로팅 버튼과의 충돌 회피)
+            left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
+            top = rect.bottom + 10;
         }
     } else if (Number.isFinite(Number(clientX)) && Number.isFinite(Number(clientY))) {
         // 수정 모드(textarea) + 포인터 좌표가 있으면 포인터 오른쪽에
@@ -1984,6 +2000,21 @@ function maybeShowDragBanButton(clientX, clientY) {
         top = activeRect ? Math.max(8, activeRect.top - 44) : 80;
     }
     top = Math.max(8, Math.min(top, window.innerHeight - 48));
+    // 그 자리에 다른 플로팅 버튼(번역기 재번역 버튼 등)이 이미 있으면 아래로 비켜난다
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const probe = document.elementFromPoint(
+            Math.max(4, Math.min(left + menuWidth / 2, window.innerWidth - 4)),
+            Math.max(4, Math.min(top + 16, window.innerHeight - 4)),
+        );
+        if (!probe || dragBanButton?.contains(probe)) break;
+        const floating = probe.closest('button, [role="button"]');
+        if (!floating || dragBanButton?.contains(floating)) break;
+        top += 48;
+        if (top > window.innerHeight - 48) {
+            top = window.innerHeight - 48;
+            break;
+        }
+    }
     menu.style.cssText = `left:${left}px; top:${top}px; ${DRAG_BAN_MENU_CSS}`;
 }
 
@@ -2030,15 +2061,7 @@ async function requestBanTrace(originalText, translatedSelection) {
     ];
     const profileId = resolveDragAiProfile(settings);
     if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
-    let raw;
-    if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
-        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, DRAG_AI_MAX_TOKENS, { stream: false, extractData: true });
-        raw = typeof result === 'string' ? result : result?.content;
-    } else if (typeof context.generateRaw === 'function') {
-        raw = await context.generateRaw({ prompt, responseLength: DRAG_AI_MAX_TOKENS, trimNames: false });
-    } else {
-        throw new Error('보조 AI를 사용할 수 없어요.');
-    }
+    const raw = await sendAiRequest(profileId, prompt, DRAG_AI_MAX_TOKENS);
     const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
@@ -2087,15 +2110,7 @@ async function requestStructureJson(mode, text) {
     ];
     const profileId = resolveDragAiProfile(settings);
     if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
-    let raw;
-    if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
-        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, DRAG_AI_MAX_TOKENS, { stream: false, extractData: true });
-        raw = typeof result === 'string' ? result : result?.content;
-    } else if (typeof context.generateRaw === 'function') {
-        raw = await context.generateRaw({ prompt, responseLength: DRAG_AI_MAX_TOKENS, trimNames: false });
-    } else {
-        throw new Error('보조 AI를 사용할 수 없어요.');
-    }
+    const raw = await sendAiRequest(profileId, prompt, DRAG_AI_MAX_TOKENS);
     const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
