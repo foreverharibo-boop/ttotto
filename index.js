@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.3.3';
+const EXTENSION_VERSION = '1.4.0';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -58,6 +58,8 @@ let smartForcePending = false;
 let forceSmartOnNextAnalysis = false;
 let runtimeActive = true;
 let eventsRegistered = false;
+let popupOpen = false;
+let settingsHomeParent = null;
 const registeredEventHandlers = [];
 
 function getContext() {
@@ -1628,9 +1630,121 @@ function bindUi() {
     });
 }
 
+// ───────────────────────── 팝업 (완드 메뉴 빠른 접근) ─────────────────────────
+// 설정 패널 DOM을 통째로 팝업으로 옮겼다가 닫을 때 되돌린다 — 모든 기능·바인딩이 그대로 동작.
+// 모바일 우선: 중앙 고정을 CSS에만 맡기지 않고, 열 때마다 JS 인라인 !important로 강제한다.
+// (MovingUI가 body에 transform을 걸어 position:fixed가 깨지는 문제 + ST 전역 CSS 오버라이드 대응)
+
+const TTOTTO_OVERLAY_BASE_CSS = [
+    'position:fixed !important', 'top:0 !important', 'left:0 !important', 'right:0 !important',
+    'bottom:0 !important', 'width:100vw !important', 'height:100vh !important', 'margin:0 !important',
+    'padding:16px !important', 'box-sizing:border-box !important', 'z-index:99990 !important',
+    'background-color:rgba(12,12,16,0.55) !important', 'align-items:center !important',
+    'justify-content:center !important', 'transform:none !important', '-webkit-transform:none !important',
+].join('; ');
+
+const TTOTTO_POPUP_BOX_CSS = [
+    'width:100% !important', 'max-width:480px !important', 'max-height:88vh !important',
+    'display:flex !important', 'flex-direction:column !important', 'position:relative !important',
+    'z-index:99991 !important', 'border-radius:14px !important', 'overflow:hidden !important',
+    'margin:0 auto !important', 'transform:none !important',
+    'background-color:var(--SmartThemeBlurTintColor, #1b1b22) !important',
+    'color:var(--SmartThemeBodyColor, #ddd) !important',
+    'border:1px solid rgba(128,128,128,0.35) !important',
+    'box-shadow:0 16px 40px rgba(0,0,0,0.4) !important',
+].join('; ');
+
+function ttottoBuildPopupShell() {
+    if (typeof document === 'undefined') return; // 테스트/헤드리스 환경 가드
+    if (document.getElementById('ttotto-overlay')) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'ttotto-overlay';
+    overlay.className = 'ttotto-overlay';
+    overlay.innerHTML = [
+        '<div id="ttotto-popup-box" class="ttotto-popup">',
+        '  <div class="ttotto-popup-header">',
+        '    <strong>🌀 또또</strong>',
+        '    <button id="ttotto-popup-close" class="menu_button" type="button" title="닫기">✕</button>',
+        '  </div>',
+        '  <div id="ttotto-popup-body" class="ttotto-popup-body"></div>',
+        '</div>',
+    ].join('\n');
+    document.body.append(overlay);
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) ttottoClosePopup();
+    });
+    overlay.querySelector('#ttotto-popup-close').addEventListener('click', ttottoClosePopup);
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && popupOpen) ttottoClosePopup();
+    });
+}
+
+function ttottoOpenPopup() {
+    if (typeof document === 'undefined') return; // 테스트/헤드리스 환경 가드
+    if (!uiReady) {
+        toastr.warning('설정 패널이 아직 준비되지 않았어요. 잠시 후 다시 열어주세요.', '🌀또또');
+        return;
+    }
+    ttottoBuildPopupShell();
+    const overlay = document.getElementById('ttotto-overlay');
+    const box = document.getElementById('ttotto-popup-box');
+    const panel = document.getElementById('ttotto-settings');
+    if (!overlay || !box || !panel) return;
+    if (!settingsHomeParent) settingsHomeParent = panel.parentElement;
+    document.getElementById('ttotto-popup-body').append(panel);
+    panel.classList.add('ttotto-in-popup');
+    // JS 강제 중앙 고정 — 매번 열 때마다 다시 박아넣는다
+    overlay.style.cssText = `display:flex !important; ${TTOTTO_OVERLAY_BASE_CSS}`;
+    box.style.cssText = TTOTTO_POPUP_BOX_CSS;
+    const header = box.querySelector('.ttotto-popup-header');
+    if (header) header.style.cssText = 'display:flex !important; align-items:center !important; justify-content:space-between !important; gap:8px !important; padding:10px 14px !important; border-bottom:1px solid rgba(128,128,128,0.25) !important; flex-shrink:0 !important;';
+    const body = document.getElementById('ttotto-popup-body');
+    if (body) body.style.cssText = 'overflow-y:auto !important; padding:8px 14px 14px !important; -webkit-overflow-scrolling:touch;';
+    popupOpen = true;
+    updateUi();
+}
+
+function ttottoClosePopup() {
+    if (typeof document === 'undefined') return; // 테스트/헤드리스 환경 가드
+    const overlay = document.getElementById('ttotto-overlay');
+    const panel = document.getElementById('ttotto-settings');
+    if (overlay) overlay.style.cssText = `display:none !important; ${TTOTTO_OVERLAY_BASE_CSS}`;
+    if (panel && settingsHomeParent) {
+        panel.classList.remove('ttotto-in-popup');
+        settingsHomeParent.append(panel);
+    }
+    popupOpen = false;
+}
+
+function ttottoAddWandButton() {
+    if (typeof document === 'undefined') return; // 테스트/헤드리스 환경 가드
+    if (document.getElementById('ttotto-wand-button')) return;
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) {
+        console.warn(`${LOG_PREFIX} #extensionsMenu를 찾지 못했습니다 — ST 버전에 따라 셀렉터 조정이 필요할 수 있어요.`);
+        return;
+    }
+    const item = document.createElement('div');
+    item.id = 'ttotto-wand-button';
+    item.className = 'list-group-item flex-container flexGap5 interactable';
+    item.tabIndex = 0;
+    item.innerHTML = '<span class="extensionsMenuExtensionButton" aria-hidden="true">🌀</span><span>또또</span>';
+    item.addEventListener('click', () => {
+        menu.style.display = 'none';
+        ttottoOpenPopup();
+    });
+    menu.append(item);
+}
+
+function ttottoRemoveWandButton() {
+    if (typeof document === 'undefined') return; // 테스트/헤드리스 환경 가드
+    document.getElementById('ttotto-wand-button')?.remove();
+}
+
 async function initializeUi() {
     if (document.getElementById('ttotto-settings')) {
         uiReady = true;
+        ttottoAddWandButton();
         return;
     }
     const context = getContext();
@@ -1641,6 +1755,7 @@ async function initializeUi() {
     uiReady = true;
     bindUi();
     populateProfiles();
+    ttottoAddWandButton();
     const settings = getSettings();
     const state = settings.enabled ? getChatState() : getChatState(false);
     updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
@@ -1732,6 +1847,7 @@ async function initialize() {
 export function onEnable() {
     runtimeActive = true;
     registerEvents();
+    if (uiReady) ttottoAddWandButton();
     scheduleAnalysis({ smart: false, delay: 50 });
 }
 
@@ -1745,11 +1861,16 @@ export function onDisable() {
     smartForcePending = false;
     forceSmartOnNextAnalysis = false;
     smartAbortController?.abort();
+    ttottoClosePopup();
+    ttottoRemoveWandButton();
     unregisterEvents();
     clearInjectedPrompt();
 }
 
 export function onClean() {
+    ttottoClosePopup();
+    ttottoRemoveWandButton();
+    document.getElementById('ttotto-overlay')?.remove();
     const context = getContext();
     delete context.extensionSettings[MODULE_NAME];
     if (context.chatMetadata && typeof context.chatMetadata === 'object') {

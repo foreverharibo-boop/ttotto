@@ -391,3 +391,28 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 완드 메뉴 팝업 (기본값 — 실제 중앙 고정은 JS 인라인 !important가 강제함) ── */
+.ttotto-overlay {
+    display: none;
+}
+
+.ttotto-popup-header strong {
+    font-size: 1.05em;
+}
+
+.ttotto-popup-header .menu_button {
+    white-space: nowrap;
+    width: auto;
+    min-width: fit-content;
+    flex-shrink: 0;
+}
+
+/* 팝업 안에서는 드로어를 항상 펼침 */
+.ttotto-in-popup .inline-drawer-content {
+    display: block !important;
+}
+
+.ttotto-in-popup .inline-drawer-icon {
+    display: none;
+}
