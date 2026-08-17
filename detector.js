@@ -708,7 +708,7 @@ export function buildInjection(patterns, maxPatterns = 6) {
     ];
 
     if (permanent.length) {
-        lines.push('Permanent character-specific bans (apply strictly in both narration and dialogue):');
+        lines.push('Permanent bans — global and character-specific (apply strictly in both narration and dialogue):');
         permanent.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
 

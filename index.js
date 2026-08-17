@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.4.0';
+const EXTENSION_VERSION = '1.5.2';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -88,6 +88,9 @@ function getSettings() {
     settings.characterBans = settings.characterBans && typeof settings.characterBans === 'object'
         ? settings.characterBans
         : {};
+    settings.globalBans = Array.isArray(settings.globalBans)
+        ? settings.globalBans.filter((term) => typeof term === 'string' && term.trim())
+        : [];
     settings.characterHistory = settings.characterHistory && typeof settings.characterHistory === 'object'
         ? settings.characterHistory
         : {};
@@ -107,6 +110,8 @@ function createDefaultChatState() {
         enabled: true,
         skipNextGeneration: false,
         lastBanHits: [],
+        banOffenses: {},
+        banOffenseLastKey: '',
         ignoredKeys: [],
         ignoredPatterns: [],
         smart: {
@@ -134,6 +139,8 @@ function getChatState(create = true) {
     state.enabled ??= true;
     state.skipNextGeneration = Boolean(state.skipNextGeneration);
     state.lastBanHits = Array.isArray(state.lastBanHits) ? state.lastBanHits.slice(0, 20) : [];
+    state.banOffenses = state.banOffenses && typeof state.banOffenses === 'object' ? state.banOffenses : {};
+    state.banOffenseLastKey = String(state.banOffenseLastKey ?? '');
     state.ignoredKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys : [];
     state.ignoredPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns : [];
     state.smart = {
@@ -184,6 +191,15 @@ function captureOriginalFromEvent(payload) {
     return { message, changed };
 }
 
+function offenseKeyFor(term, characterUuid) {
+    return `${characterUuid || 'global'}|${String(term).toLocaleLowerCase()}`;
+}
+
+function offenseCountFor(term, characterUuid) {
+    const state = getChatState(false);
+    return Number(state?.banOffenses?.[offenseKeyFor(term, characterUuid)]?.count ?? 0);
+}
+
 function updateBanHitsForMessage(message) {
     const state = getChatState(false);
     if (!state) return;
@@ -194,11 +210,28 @@ function updateBanHitsForMessage(message) {
     }
     const identity = resolveCharacterIdentity(message);
     const text = messageText(message).normalize('NFKC').toLocaleLowerCase();
-    state.lastBanHits = getCharacterBans(identity?.uuid, false)
+    const characterHits = getCharacterBans(identity?.uuid, false)
         .filter((ban) => ban.type === 'term' && cleanBanTerm(ban.term))
         .filter((ban) => text.includes(cleanBanTerm(ban.term).toLocaleLowerCase()))
-        .map((ban) => ({ term: cleanBanTerm(ban.term), characterUuid: identity.uuid }))
-        .slice(0, 20);
+        .map((ban) => ({ term: cleanBanTerm(ban.term), characterUuid: identity.uuid }));
+    const globalHits = getSettings().globalBans
+        .map((term) => cleanBanTerm(term))
+        .filter((term) => term && text.includes(term.toLocaleLowerCase()))
+        .map((term) => ({ term, characterUuid: '' }));
+    state.lastBanHits = [...globalHits, ...characterHits].slice(0, 20);
+    // 재범 카운트 — 같은 메시지를 다시 처리할 때 중복 집계 방지
+    const offenseMesKey = stableLocalId(`${identity?.uuid ?? ''}|${text.length}|${text.slice(0, 500)}`);
+    if (state.lastBanHits.length && state.banOffenseLastKey !== offenseMesKey) {
+        state.banOffenseLastKey = offenseMesKey;
+        for (const hit of state.lastBanHits) {
+            const key = offenseKeyFor(hit.term, hit.characterUuid);
+            const entry = state.banOffenses[key] ?? { count: 0 };
+            entry.count = Math.min(99, Number(entry.count ?? 0) + 1);
+            entry.lastAt = Date.now();
+            state.banOffenses[key] = entry;
+        }
+        invalidateAnalysis(); // 강화 주입이 다음 생성에 바로 반영되도록
+    }
     saveChatState();
 }
 
@@ -505,15 +538,22 @@ function removePermanentBan(characterUuid, id) {
     saveSettings();
 }
 
+// 재범 강화: 무시당한 금지 지시는 최우선 문구로 격상
+function escalateInstruction(instruction, offenseCount) {
+    if (!offenseCount) return instruction;
+    return `TOP PRIORITY — this exact ban was violated ${offenseCount} time(s) in recent responses despite instructions. Comply absolutely this time, with zero exceptions. ${instruction}`;
+}
+
 function permanentPatternsForUuids(uuids) {
     return uuids.flatMap((uuid) => getCharacterBans(uuid, false).map((ban, index) => {
         const isTerm = ban.type === 'term';
         const term = cleanBanTerm(ban.term);
         if (isTerm && !term) return null;
-        const instruction = isTerm
+        const baseInstruction = isTerm
             ? `Never use or refer to the banned expression ${JSON.stringify(term)} anywhere in this character's narration or dialogue, including trivial inflections, spacing variants, or close paraphrases that name the same concept. Do not mention or discuss this ban.`
             : String(ban.instruction ?? '').trim();
-        if (!instruction) return null;
+        if (!baseInstruction) return null;
+        const offenses = isTerm ? offenseCountFor(term, uuid) : 0;
         return {
             id: `pinned-${uuid}-${ban.id ?? index}`,
             banId: ban.id ?? String(index),
@@ -523,16 +563,48 @@ function permanentPatternsForUuids(uuids) {
             scope: ban.scope === 'dialogue' ? 'dialogue' : 'narration',
             characterUuid: uuid,
             speaker: String(ban.speaker ?? ''),
-            label: isTerm ? `영구 금지어 · ${term}` : `영구 금지 · ${ban.label}`,
+            label: isTerm
+                ? `${offenses ? `🔥×${offenses} ` : ''}영구 금지어 · ${term}`
+                : `영구 금지 · ${ban.label}`,
             example: isTerm ? term : String(ban.examples?.[0] ?? ''),
             examples: isTerm ? [term] : (ban.examples ?? []).map(String).slice(0, 3),
             count: 0,
             occurrences: 0,
             confidence: 1,
             score: 10000 - index,
-            instruction,
+            escalated: offenses,
+            instruction: escalateInstruction(baseInstruction, offenses),
         };
     }).filter(Boolean));
+}
+
+// 전역 금지어 → 모든 캐릭터·채팅의 주입에 포함되는 고정 패턴
+function globalBanPatterns() {
+    return getSettings().globalBans.map((rawTerm, index) => {
+        const term = cleanBanTerm(rawTerm);
+        if (!term) return null;
+        const offenses = offenseCountFor(term, '');
+        const baseInstruction = `Never use or refer to the banned expression ${JSON.stringify(term)} anywhere in any narration or any character's dialogue, including trivial inflections, spacing variants, or close paraphrases that name the same concept. Do not mention or discuss this ban.`;
+        return {
+            id: `global-${index}`,
+            banId: `global-${index}`,
+            key: `global|${term.toLocaleLowerCase()}`,
+            source: 'pinned',
+            kind: 'permanent-term',
+            scope: 'narration',
+            characterUuid: '',
+            speaker: '',
+            label: `${offenses ? `🔥×${offenses} ` : ''}전역 금지어 · ${term}`,
+            example: term,
+            examples: [term],
+            count: 0,
+            occurrences: 0,
+            confidence: 1,
+            score: 20000 - index,
+            escalated: offenses,
+            instruction: escalateInstruction(baseInstruction, offenses),
+        };
+    }).filter(Boolean);
 }
 
 function messageKey(message, index, text) {
@@ -870,7 +942,10 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
         characterUuid: pattern.characterUuid ?? '',
         text: `${pattern.key ?? ''}|${pattern.label ?? ''}|${pattern.instruction ?? ''}`,
     })));
-    const permanentPatterns = permanentPatternsForUuids([...new Set([...currentChatCharacterUuids(), ...activeUuids])]);
+    const permanentPatterns = [
+        ...globalBanPatterns(),
+        ...permanentPatternsForUuids([...new Set([...currentChatCharacterUuids(), ...activeUuids])]),
+    ].sort((a, b) => (b.escalated ?? 0) - (a.escalated ?? 0)); // 재범(무시당한) 금지가 맨 위로
     const permanentFingerprint = fingerprintMessages(permanentPatterns.map((pattern, index) => ({
         id: index,
         speaker: pattern.speaker,
@@ -1339,7 +1414,57 @@ function updateSmartStatus(state) {
     element.hidden = true;
 }
 
+function addGlobalBan(rawTerm) {
+    const term = cleanBanTerm(rawTerm);
+    if (!term) return { ok: false, reason: '금지어는 1~80자로 입력해 주세요.' };
+    const settings = getSettings();
+    if (settings.globalBans.some((item) => cleanBanTerm(item).toLocaleLowerCase() === term.toLocaleLowerCase())) {
+        return { ok: false, reason: '이미 등록된 전역 금지어예요.' };
+    }
+    if (settings.globalBans.length >= 100) return { ok: false, reason: '전역 금지어는 최대 100개까지 저장할 수 있어요.' };
+    settings.globalBans.push(term);
+    saveSettings();
+    return { ok: true };
+}
+
+function removeGlobalBan(term) {
+    const settings = getSettings();
+    settings.globalBans = settings.globalBans.filter((item) => item !== term);
+    saveSettings();
+}
+
+function renderGlobalBans() {
+    const list = document.getElementById('ttotto-global-ban-list');
+    if (!list) return;
+    list.replaceChildren();
+    const bans = getSettings().globalBans;
+    for (const term of bans) {
+        const row = document.createElement('div');
+        row.className = 'ttotto-ban-item';
+        const offenses = offenseCountFor(cleanBanTerm(term), '');
+        const text = document.createElement('span');
+        text.textContent = `${offenses ? `🔥×${offenses} ` : ''}🌐 ${term}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'menu_button';
+        remove.textContent = '삭제';
+        remove.addEventListener('click', () => {
+            removeGlobalBan(term);
+            invalidateAnalysis();
+            updateUi();
+        });
+        row.append(text, remove);
+        list.append(row);
+    }
+    if (!bans.length) {
+        const empty = document.createElement('small');
+        empty.textContent = '등록된 전역 금지어가 아직 없어요.';
+        list.append(empty);
+    }
+}
+
 function renderBanManager() {
+    renderGlobalBans();
     const select = document.getElementById('ttotto-ban-character');
     const list = document.getElementById('ttotto-ban-list');
     const add = document.getElementById('ttotto-add-ban');
@@ -1553,6 +1678,57 @@ function bindUi() {
         }
     });
 
+    const submitStructureBan = async () => {
+        const uuid = document.getElementById('ttotto-ban-character').value;
+        const input = document.getElementById('ttotto-structure-desc');
+        const description = input.value.trim();
+        if (!uuid) {
+            toastr.info('구조 금지를 적용할 캐릭터를 먼저 골라주세요.', '🌀또또');
+            return;
+        }
+        if (!description) {
+            toastr.info('금지할 서술 구조를 설명해 주세요.', '🌀또또');
+            return;
+        }
+        let payload;
+        try {
+            toastr.info('구조 지시문을 만드는 중…', '🌀또또');
+            payload = await requestStructureJson('description', description);
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} 구조 지시문 생성 실패 — 폴백 사용`, error);
+            payload = fallbackStructureBan('description', description);
+        }
+        input.value = '';
+        registerStructureBan(uuid, { ...payload, example: '' });
+    };
+    document.getElementById('ttotto-add-structure').addEventListener('click', () => { void submitStructureBan(); });
+    document.getElementById('ttotto-structure-desc').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void submitStructureBan();
+        }
+    });
+
+    const submitGlobalBan = () => {
+        const input = document.getElementById('ttotto-global-ban-term');
+        const result = addGlobalBan(input.value);
+        if (!result.ok) {
+            toastr.info(result.reason, '🌀또또');
+            return;
+        }
+        input.value = '';
+        invalidateAnalysis();
+        updateUi();
+        toastr.success('전역 금지어로 저장했어요. 모든 채팅에 적용돼요.', '🌀또또');
+    };
+    document.getElementById('ttotto-add-global-ban').addEventListener('click', submitGlobalBan);
+    document.getElementById('ttotto-global-ban-term').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            submitGlobalBan();
+        }
+    });
+
     document.getElementById('ttotto-chat-enabled').addEventListener('change', (event) => {
         const state = getChatState();
         if (!state) return;
@@ -1628,6 +1804,373 @@ function bindUi() {
         updateUi();
         toastr.success('현재 캐릭터들의 지난 채팅 기억을 삭제했어요.', '🌀또또');
     });
+}
+
+// ───────────────────────── 드래그 금지 ─────────────────────────
+// AI 메시지에서 표현을 드래그하면 🌀 버튼이 떠서 탭 한 번으로 영구 금지어 등록.
+//  - 한입한출: 드래그 텍스트가 곧 원문 → 즉시 등록
+//  - 번역 채팅 (표시문 드래그): 보조 AI로 원문 표현 역추적 → 확인 후 등록 (AI 없으면 수동 입력 폴백)
+//  - 번역 채팅 (수정 모드에서 드래그): 편집창은 원문이므로 즉시 등록
+
+let dragBanButton = null;
+let dragBanContext = null;
+let dragBanHandlersAttached = false;
+
+const DRAG_BAN_MENU_CSS = [
+    'position:fixed !important', 'z-index:99999 !important', 'transform:none !important',
+    'display:flex', 'gap:4px', 'padding:4px', 'border-radius:999px',
+    'border:1px solid rgba(255,255,255,0.25)', 'background-color:#2b2b34',
+    'box-shadow:0 4px 14px rgba(0,0,0,0.45)', 'user-select:none', '-webkit-user-select:none',
+].join('; ');
+const DRAG_BAN_CHIP_CSS = [
+    'padding:5px 10px', 'border-radius:999px', 'border:none', 'background:transparent',
+    'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer', 'white-space:nowrap',
+    'touch-action:manipulation',
+].join('; ');
+
+function getDragSelectionInfo() {
+    // 1) 메시지 수정 모드의 textarea — 편집창 내용은 원문
+    const active = document.activeElement;
+    if (active && active.tagName === 'TEXTAREA') {
+        const mesBlock = active.closest('.mes');
+        if (!mesBlock) return null;
+        const start = active.selectionStart ?? 0;
+        const end = active.selectionEnd ?? 0;
+        if (end <= start) return null;
+        return { rawTerm: active.value.slice(start, end), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: true };
+    }
+    // 2) 일반 메시지 본문 selection
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed) return null;
+    const anchor = selection.anchorNode instanceof Element ? selection.anchorNode : selection.anchorNode?.parentElement;
+    const mesText = anchor?.closest?.('.mes_text');
+    const mesBlock = anchor?.closest?.('.mes');
+    if (!mesText || !mesBlock) return null;
+    if (mesBlock.getAttribute('is_user') === 'true') return null;
+    return { rawTerm: String(selection), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: false };
+}
+
+// 선택이 "문장"처럼 보이는지 — 4단어 이상이거나, 문장부호로 끝나거나, 절 연결이 있으면 문장으로 본다
+function looksLikeSentence(text) {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) return false;
+    if (trimmed.split(/\s+/).length >= 4) return true;
+    if (/[.!?…~。！？]["')\]』」]?$/.test(trimmed)) return true;
+    if (/[,;:—–]|지만\s|면서\s|하며\s|not\s+\w+\s+but\s/i.test(trimmed)) return true;
+    return false;
+}
+
+// 화면 selection의 사각형 (textarea 선택은 사각형을 못 구하므로 null)
+function dragSelectionRect() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const rect = selection.getRangeAt(selection.rangeCount - 1).getBoundingClientRect();
+    return rect && (rect.width || rect.height) ? rect : null;
+}
+
+function hideDragBanButton() {
+    if (dragBanButton) dragBanButton.style.display = 'none';
+    dragBanContext = null;
+}
+
+function ensureDragBanButton() {
+    if (dragBanButton) return dragBanButton;
+    dragBanButton = document.createElement('div');
+    dragBanButton.id = 'ttotto-drag-ban';
+    const termChip = document.createElement('button');
+    termChip.id = 'ttotto-drag-ban-term';
+    termChip.type = 'button';
+    termChip.textContent = '🌀 표현';
+    termChip.title = '이 표현을 영구 금지어로';
+    const structureChip = document.createElement('button');
+    structureChip.id = 'ttotto-drag-ban-structure';
+    structureChip.type = 'button';
+    structureChip.textContent = '🧱 구조';
+    structureChip.title = '이 문장 같은 서술 구조를 금지';
+    dragBanButton.append(termChip, structureChip);
+    document.body.append(dragBanButton);
+    // click 전에 selection이 사라지지 않도록 mousedown/touchstart를 잡아둔다
+    for (const type of ['mousedown', 'touchstart']) {
+        dragBanButton.addEventListener(type, (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        }, { passive: false });
+    }
+    termChip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleDragBanClick();
+    });
+    structureChip.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleDragStructureClick();
+    });
+    return dragBanButton;
+}
+
+function maybeShowDragBanButton(clientX, clientY) {
+    if (!runtimeActive || !getSettings().enabled) return hideDragBanButton();
+    const info = getDragSelectionInfo();
+    const rawTerm = String(info?.rawTerm ?? '').trim().slice(0, 400);
+    if (!info || !rawTerm || !Number.isInteger(info.mesIndex) || info.mesIndex < 0) return hideDragBanButton();
+    const term = cleanBanTerm(rawTerm);
+    dragBanContext = { ...info, rawTerm, term };
+    const menu = ensureDragBanButton();
+    // 선택이 단어/짧은 구면 🌀 표현만, 문장이면 🧱 구조를 앞세워 둘 다, 80자 초과면 구조만
+    const sentence = looksLikeSentence(rawTerm);
+    const termChip = menu.querySelector('#ttotto-drag-ban-term');
+    const structureChip = menu.querySelector('#ttotto-drag-ban-structure');
+    termChip.style.cssText = `${DRAG_BAN_CHIP_CSS}; ${term ? '' : 'display:none;'}`;
+    structureChip.style.cssText = `${DRAG_BAN_CHIP_CSS}; ${!term || sentence ? 'order:-1;' : 'display:none;'}`;
+
+    // 위치: 드래그한 선택 영역의 바로 오른쪽 (세로는 선택 중앙에 맞춤)
+    const rect = info.fromEdit ? null : dragSelectionRect();
+    const menuWidth = term ? 150 : 84;
+    let left;
+    let top;
+    if (rect) {
+        left = rect.right + 8;
+        top = rect.top + rect.height / 2 - 16;
+        if (left > window.innerWidth - menuWidth - 8) {
+            // 오른쪽 공간이 없으면 선택 영역 아래로
+            left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+            top = rect.bottom + 8;
+        }
+    } else {
+        // 수정 모드(textarea)는 선택 사각형을 못 구하므로 포인터 오른쪽에
+        left = Math.min((Number(clientX) || 40) + 12, window.innerWidth - menuWidth - 8);
+        top = (Number(clientY) || 90) - 16;
+    }
+    top = Math.max(8, Math.min(top, window.innerHeight - 48));
+    menu.style.cssText = `left:${left}px; top:${top}px; ${DRAG_BAN_MENU_CSS}`;
+}
+
+function onDragBanPointerUp(event) {
+    if (!runtimeActive) return;
+    if (event.target === dragBanButton) return;
+    const x = event.clientX ?? event.changedTouches?.[0]?.clientX;
+    const y = event.clientY ?? event.changedTouches?.[0]?.clientY;
+    // selection이 확정된 뒤에 읽도록 한 박자 늦춘다 (모바일 롱프레스 선택 포함)
+    setTimeout(() => maybeShowDragBanButton(x, y), 60);
+}
+
+function onDragBanSelectionChange() {
+    if (!dragBanButton || dragBanButton.style.display === 'none') return;
+    const info = getDragSelectionInfo();
+    if (!info || !String(info.rawTerm ?? '').trim()) hideDragBanButton();
+}
+
+async function requestBanTrace(originalText, translatedSelection) {
+    const context = getContext();
+    const settings = getSettings();
+    const prompt = [
+        {
+            role: 'system',
+            content: 'You match a phrase selected from a TRANSLATED text back to the ORIGINAL text. Return ONLY JSON, no markdown: {"match":"exact substring copied verbatim from the original text"}. The match must be 1-80 characters and appear character-for-character in the original. Pick the expression that corresponds to the selected phrase. If nothing corresponds, return {"match":""}.',
+        },
+        { role: 'user', content: `ORIGINAL:\n${originalText.slice(0, 6000)}\n\nSELECTED (translated):\n${translatedSelection}` },
+    ];
+    const profileId = String(settings.smartProfileId ?? '').trim();
+    let raw;
+    if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
+        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, 200, { stream: false, extractData: true });
+        raw = typeof result === 'string' ? result : result?.content;
+    } else if (typeof context.generateRaw === 'function') {
+        raw = await context.generateRaw({ prompt, responseLength: 200, trimNames: false });
+    } else {
+        throw new Error('보조 AI를 사용할 수 없어요.');
+    }
+    const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('역추적 응답을 해석하지 못했어요.');
+    return cleanBanTerm(JSON.parse(clean.slice(start, end + 1))?.match ?? '');
+}
+
+// 서술 구조 금지 — type 'pattern' 금지로 저장되어 기존 주입 파이프라인을 그대로 탄다
+function addStructureBan(characterUuid, { label, instruction, example }) {
+    const cleanInstruction = String(instruction ?? '').trim().slice(0, 500);
+    if (!cleanInstruction) return { ok: false, reason: '구조 설명이 비어 있어요.' };
+    const bans = getCharacterBans(characterUuid);
+    if (bans.some((ban) => ban.type === 'pattern' && ban.instruction === cleanInstruction)) {
+        return { ok: false, reason: '이미 등록된 구조 금지예요.' };
+    }
+    if (bans.length >= 100) return { ok: false, reason: '한 캐릭터에는 최대 100개까지 저장할 수 있어요.' };
+    bans.push({
+        id: `structure-${stableLocalId(`${cleanInstruction}|${Date.now()}`)}`,
+        type: 'pattern',
+        key: `structure|${stableLocalId(cleanInstruction)}`,
+        label: String(label ?? '구조 금지').slice(0, 100),
+        instruction: cleanInstruction,
+        scope: 'narration',
+        speaker: '',
+        examples: example ? [String(example).slice(0, 200)] : [],
+        characterUuid,
+        createdAt: Date.now(),
+    });
+    saveSettings();
+    return { ok: true };
+}
+
+// 보조 AI로 예시 문장(또는 자연어 설명)에서 구조 금지 지시문 생성
+async function requestStructureJson(mode, text) {
+    const context = getContext();
+    const settings = getSettings();
+    const system = mode === 'description'
+        ? 'The user describes, in natural language, a narrative structure/habit they want banned in roleplay prose. Return ONLY JSON, no markdown: {"label":"short Korean label for UI, max 40 chars","instruction":"one precise English instruction (max 300 chars) telling the writer to avoid that structure. Describe the construction generally so paraphrases are caught. Ban only the construction, never content, tone, or characterization."}'
+        : 'Analyze the given passage from a roleplay response and identify its reusable NARRATIVE STRUCTURE — sentence construction, rhythm, ordering of beats — not its specific content. Return ONLY JSON, no markdown: {"label":"short Korean label for UI, max 40 chars","instruction":"one precise English instruction (max 300 chars) telling the writer to avoid reusing this structure, described generally so structurally parallel rewrites are caught. Ban only the construction, never content, tone, or characterization."}';
+    const prompt = [
+        { role: 'system', content: system },
+        { role: 'user', content: String(text).slice(0, 1200) },
+    ];
+    const profileId = String(settings.smartProfileId ?? '').trim();
+    let raw;
+    if (profileId && typeof context.ConnectionManagerRequestService?.sendRequest === 'function') {
+        const result = await context.ConnectionManagerRequestService.sendRequest(profileId, prompt, 300, { stream: false, extractData: true });
+        raw = typeof result === 'string' ? result : result?.content;
+    } else if (typeof context.generateRaw === 'function') {
+        raw = await context.generateRaw({ prompt, responseLength: 300, trimNames: false });
+    } else {
+        throw new Error('보조 AI를 사용할 수 없어요.');
+    }
+    const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('구조 분석 응답을 해석하지 못했어요.');
+    const parsed = JSON.parse(clean.slice(start, end + 1));
+    const label = String(parsed?.label ?? '').trim().slice(0, 40);
+    const instruction = String(parsed?.instruction ?? '').trim().slice(0, 300);
+    if (!instruction) throw new Error('구조 지시문이 비어 있어요.');
+    return { label: label || '구조 금지', instruction };
+}
+
+// AI 없이도 동작하는 구조 금지 폴백
+function fallbackStructureBan(mode, text) {
+    const excerpt = String(text).trim().slice(0, 160);
+    if (mode === 'description') {
+        return {
+            label: `구조 금지 · ${excerpt.slice(0, 24)}`,
+            instruction: `Avoid the following narrative structure/habit (described by the user): "${excerpt}". Vary sentence construction, rhythm, and the ordering of beats instead. Ban only the construction, never content or characterization.`,
+        };
+    }
+    return {
+        label: `구조 금지 · ${excerpt.slice(0, 24)}…`,
+        instruction: `Avoid reusing the narrative structure exemplified by: "${excerpt}". Do not produce structurally parallel rewrites — vary sentence construction, rhythm, and the ordering of beats. Ban only the construction, never content or characterization.`,
+    };
+}
+
+function registerStructureBan(characterUuid, payload) {
+    const result = addStructureBan(characterUuid, payload);
+    if (!result.ok) {
+        toastr.info(result.reason, '🌀또또');
+        return;
+    }
+    invalidateAnalysis();
+    updateUi();
+    toastr.success(`서술 구조 금지로 저장했어요: ${payload.label}`, '🌀또또');
+}
+
+async function handleDragStructureClick() {
+    const ctx = dragBanContext;
+    hideDragBanButton();
+    if (!ctx) return;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const message = chat[ctx.mesIndex];
+    if (!message || message.is_user || message.is_system) {
+        toastr.info('AI 메시지에서만 등록할 수 있어요.', '🌀또또');
+        return;
+    }
+    const identity = resolveCharacterIdentity(message);
+    const uuid = String(identity?.uuid ?? '');
+    if (!uuid) {
+        toastr.info('이 메시지의 캐릭터를 식별하지 못했어요.', '🌀또또');
+        return;
+    }
+    const example = ctx.rawTerm;
+    // 구조 분석은 번역문이어도 무방 — AI가 구조를 언어 중립적인 영어 지시로 변환한다
+    try {
+        toastr.info('이 문장의 서술 구조를 분석하는 중…', '🌀또또');
+        const analyzed = await requestStructureJson('example', example);
+        const ok = await confirmAction('🌀또또 · 구조 금지 확인', `이 구조를 금지할까요?\n\n[${analyzed.label}]\n${analyzed.instruction}`);
+        if (ok) registerStructureBan(uuid, { ...analyzed, example });
+    } catch (error) {
+        console.warn(`${LOG_PREFIX} 구조 분석 실패 — 폴백 등록`, error);
+        const fallback = fallbackStructureBan('example', example);
+        const ok = await confirmAction('🌀또또 · 구조 금지 (기본형)', `보조 AI 분석 없이 예시 기반으로 등록할까요?\n\n"${example.slice(0, 120)}"`);
+        if (ok) registerStructureBan(uuid, { ...fallback, example });
+    }
+}
+
+function registerDragBan(characterUuid, rawTerm) {
+    const result = addManualBan(characterUuid, rawTerm);
+    if (!result.ok) {
+        toastr.info(result.reason, '🌀또또');
+        return;
+    }
+    invalidateAnalysis();
+    updateUi();
+    toastr.success(`영구 금지어로 저장했어요: ${cleanBanTerm(rawTerm)}`, '🌀또또');
+}
+
+async function handleDragBanClick() {
+    const ctx = dragBanContext;
+    hideDragBanButton();
+    if (!ctx) return;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const message = chat[ctx.mesIndex];
+    if (!message || message.is_user || message.is_system) {
+        toastr.info('AI 메시지에서만 등록할 수 있어요.', '🌀또또');
+        return;
+    }
+    const identity = resolveCharacterIdentity(message);
+    const uuid = String(identity?.uuid ?? '');
+    if (!uuid) {
+        toastr.info('이 메시지의 캐릭터를 식별하지 못했어요.', '🌀또또');
+        return;
+    }
+    const original = messageText(message).normalize('NFKC');
+    const term = ctx.term;
+    // 수정 모드 드래그이거나 원문에 그대로 있으면(한입한출) 즉시 등록
+    if (ctx.fromEdit || original.toLocaleLowerCase().includes(term.toLocaleLowerCase())) {
+        registerDragBan(uuid, term);
+        return;
+    }
+    // 번역문 드래그 — 보조 AI 역추적 → 확인 → 등록, 실패 시 수동 입력 폴백
+    toastr.info('번역문이네요 — 원문에서 해당 표현을 찾는 중…', '🌀또또');
+    try {
+        const match = await requestBanTrace(original, term);
+        if (match && original.toLocaleLowerCase().includes(match.toLocaleLowerCase())) {
+            const ok = await confirmAction('🌀또또 · 원문 확인', `원문에서 이 표현을 금지할까요?\n\n"${match}"`);
+            if (ok) registerDragBan(uuid, match);
+            return;
+        }
+        throw new Error('원문에서 대응 표현을 찾지 못했어요.');
+    } catch (error) {
+        console.warn(`${LOG_PREFIX} 원문 역추적 실패 — 수동 입력 폴백`, error);
+        const manual = window.prompt(
+            `원문 표현을 직접 입력해 주세요 (역추적 실패).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
+            '',
+        );
+        if (manual) registerDragBan(uuid, manual);
+    }
+}
+
+function attachDragBanHandlers() {
+    if (dragBanHandlersAttached || typeof document === 'undefined') return;
+    document.addEventListener('mouseup', onDragBanPointerUp);
+    document.addEventListener('touchend', onDragBanPointerUp);
+    document.addEventListener('selectionchange', onDragBanSelectionChange);
+    dragBanHandlersAttached = true;
+}
+
+function detachDragBanHandlers() {
+    if (!dragBanHandlersAttached || typeof document === 'undefined') return;
+    document.removeEventListener('mouseup', onDragBanPointerUp);
+    document.removeEventListener('touchend', onDragBanPointerUp);
+    document.removeEventListener('selectionchange', onDragBanSelectionChange);
+    dragBanHandlersAttached = false;
+    hideDragBanButton();
 }
 
 // ───────────────────────── 팝업 (완드 메뉴 빠른 접근) ─────────────────────────
@@ -1745,6 +2288,7 @@ async function initializeUi() {
     if (document.getElementById('ttotto-settings')) {
         uiReady = true;
         ttottoAddWandButton();
+        attachDragBanHandlers();
         return;
     }
     const context = getContext();
@@ -1756,6 +2300,7 @@ async function initializeUi() {
     bindUi();
     populateProfiles();
     ttottoAddWandButton();
+    attachDragBanHandlers();
     const settings = getSettings();
     const state = settings.enabled ? getChatState() : getChatState(false);
     updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
@@ -1847,7 +2392,10 @@ async function initialize() {
 export function onEnable() {
     runtimeActive = true;
     registerEvents();
-    if (uiReady) ttottoAddWandButton();
+    if (uiReady) {
+        ttottoAddWandButton();
+        attachDragBanHandlers();
+    }
     scheduleAnalysis({ smart: false, delay: 50 });
 }
 
@@ -1863,6 +2411,7 @@ export function onDisable() {
     smartAbortController?.abort();
     ttottoClosePopup();
     ttottoRemoveWandButton();
+    detachDragBanHandlers();
     unregisterEvents();
     clearInjectedPrompt();
 }
