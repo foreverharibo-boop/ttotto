@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.7.0';
+const EXTENSION_VERSION = '1.7.2';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -92,6 +92,9 @@ function getSettings() {
         : {};
     settings.globalBans = Array.isArray(settings.globalBans)
         ? settings.globalBans.filter((term) => typeof term === 'string' && term.trim())
+        : [];
+    settings.globalStructureBans = Array.isArray(settings.globalStructureBans)
+        ? settings.globalStructureBans.filter((ban) => ban && typeof ban === 'object' && String(ban.instruction ?? '').trim())
         : [];
     settings.characterHistory = settings.characterHistory && typeof settings.characterHistory === 'object'
         ? settings.characterHistory
@@ -609,7 +612,28 @@ function globalBanPatterns() {
             escalated: offenses,
             instruction: escalateInstruction(baseInstruction, offenses),
         };
-    }).filter(Boolean);
+    }).filter(Boolean).concat(
+        // 전역 구조 금지 — 지시문 그대로 모든 채팅의 주입에 포함
+        getSettings().globalStructureBans.map((ban, index) => ({
+            id: `global-structure-${index}`,
+            banId: `global-structure-${index}`,
+            key: `global-structure|${stableLocalId(String(ban.instruction))}`,
+            source: 'pinned',
+            kind: 'permanent-pattern',
+            scope: 'narration',
+            characterUuid: '',
+            speaker: '',
+            label: `전역 구조 금지 · ${String(ban.label ?? '구조').slice(0, 60)}`,
+            example: String(ban.example ?? ''),
+            examples: ban.example ? [String(ban.example)] : [],
+            count: 0,
+            occurrences: 0,
+            confidence: 1,
+            score: 19000 - index,
+            escalated: 0,
+            instruction: String(ban.instruction).slice(0, 500),
+        })),
+    );
 }
 
 function messageKey(message, index, text) {
@@ -1452,6 +1476,30 @@ function removeGlobalBan(term) {
     saveSettings();
 }
 
+function addGlobalStructureBan(payload) {
+    const instruction = String(payload?.instruction ?? '').trim().slice(0, 500);
+    if (!instruction) return { ok: false, reason: '구조 설명이 비어 있어요.' };
+    const settings = getSettings();
+    if (settings.globalStructureBans.some((ban) => ban.instruction === instruction)) {
+        return { ok: false, reason: '이미 등록된 전역 구조 금지예요.' };
+    }
+    if (settings.globalStructureBans.length >= 100) return { ok: false, reason: '전역 구조 금지는 최대 100개까지 저장할 수 있어요.' };
+    settings.globalStructureBans.push({
+        label: String(payload?.label ?? '구조 금지').slice(0, 100),
+        instruction,
+        example: String(payload?.example ?? '').slice(0, 200),
+        createdAt: Date.now(),
+    });
+    saveSettings();
+    return { ok: true };
+}
+
+function removeGlobalStructureBan(instruction) {
+    const settings = getSettings();
+    settings.globalStructureBans = settings.globalStructureBans.filter((ban) => ban.instruction !== instruction);
+    saveSettings();
+}
+
 function renderGlobalBans() {
     const list = document.getElementById('ttotto-global-ban-list');
     if (!list) return;
@@ -1475,9 +1523,27 @@ function renderGlobalBans() {
         row.append(text, remove);
         list.append(row);
     }
-    if (!bans.length) {
+    for (const ban of getSettings().globalStructureBans) {
+        const row = document.createElement('div');
+        row.className = 'ttotto-ban-item';
+        const text = document.createElement('span');
+        text.textContent = `🧱 ${ban.label}`;
+        text.title = ban.instruction;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'menu_button';
+        remove.textContent = '삭제';
+        remove.addEventListener('click', () => {
+            removeGlobalStructureBan(ban.instruction);
+            invalidateAnalysis();
+            updateUi();
+        });
+        row.append(text, remove);
+        list.append(row);
+    }
+    if (!bans.length && !getSettings().globalStructureBans.length) {
         const empty = document.createElement('small');
-        empty.textContent = '등록된 전역 금지어가 아직 없어요.';
+        empty.textContent = '등록된 전역 금지가 아직 없어요.';
         list.append(empty);
     }
 }
@@ -1513,6 +1579,26 @@ function renderBanManager() {
         row.className = 'ttotto-ban-item';
         const text = document.createElement('span');
         text.textContent = ban.type === 'term' ? `🚫 ${ban.term}` : `📌 ${ban.label}`;
+        if (ban.type !== 'term' && ban.instruction) text.title = ban.instruction;
+        const promote = document.createElement('button');
+        promote.type = 'button';
+        promote.className = 'menu_button';
+        promote.textContent = '전역으로';
+        promote.title = '이 항목을 전역 금지로 옮겨요 (모든 캐릭터·채팅에 적용)';
+        promote.addEventListener('click', () => {
+            const result = ban.type === 'term'
+                ? addGlobalBan(ban.term)
+                : addGlobalStructureBan({ label: ban.label, instruction: ban.instruction, example: ban.examples?.[0] ?? '' });
+            const alreadyGlobal = !result.ok && String(result.reason ?? '').startsWith('이미 등록된');
+            if (!result.ok && !alreadyGlobal) {
+                toastr.info(result.reason, '🌀또또');
+                return;
+            }
+            removePermanentBan(uuid, ban.id); // 중복 주입 방지 — 전역으로 '이동'
+            invalidateAnalysis();
+            updateUi();
+            toastr.success(alreadyGlobal ? '이미 전역에 있어서 캐릭터 항목만 정리했어요.' : '전역 금지로 옮겼어요. 모든 캐릭터·채팅에 적용돼요.', '🌀또또');
+        });
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'menu_button';
@@ -1522,7 +1608,7 @@ function renderBanManager() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, remove);
+        row.append(text, promote, remove);
         list.append(row);
     }
     if (!bans.length) {
@@ -1778,6 +1864,44 @@ function bindUi() {
         toastr.success('전역 금지어로 저장했어요. 모든 채팅에 적용돼요.', '🌀또또');
     };
     document.getElementById('ttotto-add-global-ban').addEventListener('click', submitGlobalBan);
+
+    const submitGlobalStructureBan = async () => {
+        const input = document.getElementById('ttotto-global-structure-desc');
+        const description = input.value.trim();
+        if (!description) {
+            toastr.info('전역으로 금지할 서술 구조를 설명해 주세요.', '🌀또또');
+            return;
+        }
+        let payload;
+        const structureSettings = getSettings();
+        if (!structureSettings.dragStructureAi || resolveDragAiProfile(structureSettings) === null) {
+            payload = fallbackStructureBan('description', description);
+        } else {
+            try {
+                toastr.info('구조 지시문을 만드는 중…', '🌀또또');
+                payload = await requestStructureJson('description', description);
+            } catch (error) {
+                console.warn(`${LOG_PREFIX} 전역 구조 지시문 생성 실패 — 폴백 사용`, error);
+                payload = fallbackStructureBan('description', description);
+            }
+        }
+        const result = addGlobalStructureBan(payload);
+        if (!result.ok) {
+            toastr.info(result.reason, '🌀또또');
+            return;
+        }
+        input.value = '';
+        invalidateAnalysis();
+        updateUi();
+        toastr.success(`전역 구조 금지로 저장했어요: ${payload.label}`, '🌀또또');
+    };
+    document.getElementById('ttotto-add-global-structure').addEventListener('click', () => { void submitGlobalStructureBan(); });
+    document.getElementById('ttotto-global-structure-desc').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void submitGlobalStructureBan();
+        }
+    });
     document.getElementById('ttotto-global-ban-term').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
             event.preventDefault();
