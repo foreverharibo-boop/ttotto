@@ -18,11 +18,12 @@
 
 #ttotto-settings .ttotto-heading {
   justify-content: flex-start;
+  gap: 0;
   min-width: 0;
 }
 
 #ttotto-settings .ttotto-heading > span {
-  font-size: 1.3em;
+  font-size: 1em;
 }
 
 #ttotto-settings .ttotto-heading small,
