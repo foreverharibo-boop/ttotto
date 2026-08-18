@@ -5,7 +5,6 @@
 
 #ttotto-settings .ttotto-drawer-header,
 #ttotto-settings .ttotto-heading,
-#ttotto-settings .ttotto-header-actions,
 #ttotto-settings .ttotto-section-head,
 #ttotto-settings .ttotto-setting-row,
 #ttotto-settings .ttotto-pattern-head,
@@ -36,11 +35,6 @@
   opacity: 0.72;
   font-size: 0.88em;
   line-height: 1.35;
-}
-
-#ttotto-settings .ttotto-master-label {
-  margin: 0;
-  white-space: nowrap;
 }
 
 /* Keep ttotto checkmarks visible even when a SillyTavern theme uses a white

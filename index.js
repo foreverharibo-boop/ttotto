@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.7.3';
+const EXTENSION_VERSION = '1.7.4';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -80,6 +80,11 @@ function getSettings() {
         ...(current && typeof current === 'object' ? current : {}),
     };
     const settings = context.extensionSettings[MODULE_NAME];
+    // The extension itself is enabled/disabled by SillyTavern. The redundant
+    // master checkbox was removed from the drawer header, so migrate any old
+    // saved "off" value to active instead of leaving users stuck without a UI
+    // control that can turn it back on.
+    settings.enabled = true;
     settings.sourceMode = 'original';
     settings.characterUuids = settings.characterUuids && typeof settings.characterUuids === 'object'
         ? settings.characterUuids
@@ -1635,7 +1640,6 @@ function updateUi(analysisOverride = null) {
     const enabled = settings.enabled && (state?.enabled ?? false);
     const analysis = analysisOverride ?? (enabled ? analyzeCurrentChat(false) : analysisCache ?? EMPTY_ANALYSIS);
 
-    document.getElementById('ttotto-enabled').checked = settings.enabled;
     document.getElementById('ttotto-chat-enabled').checked = state?.enabled ?? false;
     document.getElementById('ttotto-chat-enabled').disabled = !state;
     document.getElementById('ttotto-window-size').value = String(settings.windowSize);
@@ -1654,12 +1658,6 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
     document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'}`;
-
-    const header = document.getElementById('ttotto-header-status');
-    if (!settings.enabled) header.textContent = '현재 꺼져 있어요';
-    else if (!state) header.textContent = '채팅을 열면 분석을 시작해요';
-    else if (!state.enabled) header.textContent = '현재 채팅에서는 꺼져 있어요';
-    else header.textContent = `반복 표현 ${analysis.patterns.length}개 방지 중`;
 
     renderPatterns(enabled ? analysis.patterns : []);
     document.getElementById('ttotto-prompt-text').textContent = enabled && analysis.prompt ? analysis.prompt : '현재 주입할 내용이 없어요.';
@@ -1773,7 +1771,6 @@ function bindUi() {
         button.addEventListener('click', () => setTab(button.dataset.ttottoTab));
     });
 
-    bindSetting('ttotto-enabled', 'enabled', Boolean);
     bindSetting('ttotto-window-size', 'windowSize', Number);
     bindSetting('ttotto-sensitivity', 'sensitivity', String);
     bindSetting('ttotto-narration-enabled', 'narrationEnabled', Boolean);
