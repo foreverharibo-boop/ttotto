@@ -151,6 +151,22 @@ test('원문 보존과 같은 이름 카드의 UUID 분리를 엄격하게 처�
     assert.equal(module.resolveCharacterAvatarKey({ name: '김홍진' }, context), '');
     assert.equal(module.resolveCharacterAvatarKey({ name: '김홍진', original_avatar: 'hongjin-b.png' }, context), 'hongjin-b.png');
 
+    const hashNameContext = {
+        ...context,
+        groupId: null,
+        characterId: 0,
+        characters: [{ name: '#김챗시 #박챗시', avatar: '#김챗시 #박챗시.png' }],
+        groups: [],
+    };
+    assert.equal(
+        module.resolveCharacterAvatarKey({ name: '#김챗시 #박챗시', original_avatar: '#김챗시 #박챗시.png' }, hashNameContext),
+        '#김챗시 #박챗시.png',
+    );
+    assert.equal(
+        module.ensureCharacterUuid({ characterUuids: {} }, '#김챗시 #박챗시.png', () => 'uuid-hash-name'),
+        'uuid-hash-name',
+    );
+
     context.extensionSettings.ttotto = {
         characterUuids: { 'hongjin-a.png': 'uuid-a', 'hongjin-b.png': 'uuid-b' },
         characterAllowances: {

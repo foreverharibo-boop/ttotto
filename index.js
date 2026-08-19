@@ -13,7 +13,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.7.4';
+const EXTENSION_VERSION = '1.7.5';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -349,7 +349,11 @@ function messageText(message) {
 }
 
 function normalizeAvatarKey(value) {
-    const clean = String(value ?? '').trim().replace(/[?#].*$/, '');
+    // SillyTavern can use the character card filename as the avatar key, and
+    // that filename may legitimately contain '#'. Treat only '?' as the start
+    // of URL parameters; stripping '#' made cards such as "#김챗시.png"
+    // impossible to identify.
+    const clean = String(value ?? '').trim().replace(/\?.*$/, '');
     if (!clean) return '';
     try {
         const decoded = decodeURIComponent(clean);
