@@ -693,7 +693,7 @@ export function mergePatterns(localPatterns, smartPatterns) {
     return deduplicatePatterns([...(smartPatterns ?? []), ...(localPatterns ?? [])]);
 }
 
-export function buildInjection(patterns, maxPatterns = 6) {
+export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     const valid = patterns.filter((pattern) => pattern?.instruction);
     const permanent = valid.filter((pattern) => pattern.source === 'pinned').slice(0, 30);
     const detected = valid.filter((pattern) => pattern.source !== 'pinned').slice(0, Math.max(1, maxPatterns));
@@ -706,6 +706,10 @@ export function buildInjection(patterns, maxPatterns = 6) {
         'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
         'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
     ];
+
+    if (exclusionInfo?.excludeAllTaggedBlocks !== false) {
+        lines.push('Tag-wrapped or HTML-formatted blocks (status panels, trackers, sheets, and similar) were excluded from this repetition check entirely — their absence above is not a signal to omit or shorten them. Keep producing them in full, every reply, exactly as instructed elsewhere.');
+    }
 
     if (permanent.length) {
         lines.push('Permanent bans — global and character-specific (apply strictly in both narration and dialogue):');
