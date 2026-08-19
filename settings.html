@@ -97,15 +97,15 @@
         </label>
 
         <label class="ttotto-field" for="ttotto-drag-ai-profile">
-          <span>드래그 금지 보조 AI</span>
+          <span>드래그 금지 보조 AI 연결 프로필</span>
           <select id="ttotto-drag-ai-profile" class="text_pole"></select>
-          <small>드래그 금지의 번역문 원문 역추적과 구조 지시문 생성에 쓰는 연결이에요. "사용 안 함"이면 수동 입력 폴백으로만 동작해요.</small>
+          <small>아래 "구조 금지 AI 분석"이 켜져 있을 때만 이 연결로 API를 호출해요. 여기서는 어떤 연결을 쓸지만 고르고, 사용 여부는 아래 체크박스로 결정돼요.</small>
         </label>
 
         <label class="ttotto-setting-row" for="ttotto-structure-ai">
           <span>
             <strong>구조 금지 AI 분석</strong>
-            <small>켜면 드래그한 문장의 구조를 AI가 정밀한 지시문으로 다듬어요 (호출 발생). 끄면 확장이 자체 규칙으로 구조 특징을 분석해서 확인 팝업을 띄워요 (호출 없음).</small>
+            <small>켜면 위에서 고른 연결로 구조 지시문 생성 + 번역문 드래그 시 원문 역추적을 API로 처리해요 (호출 발생). 끄면 두 기능 모두 API 호출 없이 즉시 자체 규칙 분석/수동 입력 폴백으로 동작해요.</small>
           </span>
           <input id="ttotto-structure-ai" type="checkbox">
         </label>

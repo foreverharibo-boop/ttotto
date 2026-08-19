@@ -29,8 +29,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
-    dragAiProfile: '', // '' = 정밀 분석 설정 따름, 'off' = 사용 안 함, 그 외 = 연결 프로필 id
-    dragStructureAi: true, // 구조 금지에 AI 분석 사용 — 끄면 드래그한 문장을 예시로 즉시 등록
+    dragAiProfile: '', // 드래그 금지 보조 AI가 사용할 연결 프로필. '' = 현재 연결 사용, 그 외 = 연결 프로필 id (실제 온/오프는 dragStructureAi가 결정)
+    dragStructureAi: true, // 드래그 금지 보조 AI(구조 지시문 생성 + 번역문 원문 역추적) 사용 여부 — 끄면 두 기능 모두 즉시 수동/로컬 폴백으로 전환
     smartMaxTokens: 20000, // 상한일 뿐 실제 소모와 무관 — 추론 토큰 포함해도 넉넉하고, 웬만한 백엔드 상한보다 낮아 거부되지 않음
     maxInjectedPatterns: 6,
     sourceMode: 'original',
@@ -109,6 +109,13 @@ function getSettings() {
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
     if (!(smartTokens >= 2000 && smartTokens <= 65536)) settings.smartMaxTokens = 20000;
+    // 마이그레이션: 구버전 dragAiProfile === 'off'(드롭다운 자체 온오프)는 폐지됨.
+    // 온오프는 이제 dragStructureAi 체크박스 하나로만 결정하므로, 예전에 'off'를 골랐던 사용자의 의도(끄기)를
+    // dragStructureAi=false로 옮겨주고 드롭다운은 '현재 연결 사용'으로 되돌린다.
+    if (String(settings.dragAiProfile ?? '') === 'off') {
+        settings.dragAiProfile = '';
+        settings.dragStructureAi = false;
+    }
     settings.excludeAllTaggedBlocks = settings.excludeAllTaggedBlocks !== false;
     return settings;
 }
@@ -1708,26 +1715,24 @@ function populateProfiles() {
     }
     select.value = currentValue;
 
-    // 드래그 금지 보조 AI 연결 선택
+    // 드래그 금지 보조 AI 연결 선택 — 순수 연결 프로필 목록만 보여준다.
+    // 실제 사용 여부(온/오프)는 이 드롭다운이 아니라 '구조 금지 AI 분석' 체크박스(dragStructureAi)가 결정한다.
     const dragSelect = document.getElementById('ttotto-drag-ai-profile');
     if (dragSelect) {
         const dragValue = String(settings.dragAiProfile ?? '');
         dragSelect.replaceChildren();
-        const follow = document.createElement('option');
-        follow.value = '';
-        follow.textContent = '정밀 분석 설정 따름 (기본)';
-        const off = document.createElement('option');
-        off.value = 'off';
-        off.textContent = '사용 안 함 — 수동 폴백만';
-        dragSelect.append(follow, off);
+        const current = document.createElement('option');
+        current.value = '';
+        current.textContent = '현재 연결 사용';
+        dragSelect.append(current);
         for (const option of [...select.options]) {
-            if (!option.value || option.value === 'off') continue;
+            if (!option.value) continue;
             const clone = document.createElement('option');
             clone.value = option.value;
             clone.textContent = option.textContent;
             dragSelect.append(clone);
         }
-        if (dragValue && dragValue !== 'off' && ![...dragSelect.options].some((option) => option.value === dragValue)) {
+        if (dragValue && ![...dragSelect.options].some((option) => option.value === dragValue)) {
             const missing = document.createElement('option');
             missing.value = dragValue;
             missing.textContent = '저장된 연결 프로필을 찾을 수 없음';
@@ -2177,11 +2182,11 @@ function onDragBanSelectionChange() {
     }, 250);
 }
 
-// 드래그 보조 AI 연결 결정: null = 사용 안 함, '' = 현재 연결, 그 외 = 프로필 id
+// 드래그 보조 AI 연결 결정: 구조 금지 AI 분석(dragStructureAi)이 꺼져 있으면 항상 null(사용 안 함).
+// 켜져 있으면 '드래그 금지 보조 AI' 드롭다운에서 고른 연결 프로필을 그대로 사용한다 ('' = 현재 연결).
 function resolveDragAiProfile(settings) {
-    const pref = String(settings.dragAiProfile ?? '').trim();
-    if (pref === 'off') return null;
-    return pref || String(settings.smartProfileId ?? '').trim();
+    if (!settings.dragStructureAi) return null;
+    return String(settings.dragAiProfile ?? '').trim();
 }
 
 async function requestBanTrace(originalText, translatedSelection) {
@@ -2400,7 +2405,17 @@ async function handleDragBanClick() {
         registerDragBan(uuid, term);
         return;
     }
-    // 번역문 드래그 — 보조 AI 역추적 → 확인 → 등록, 실패 시 수동 입력 폴백
+    // 번역문 드래그 — '구조 금지 AI 분석'이 꺼져 있으면 API 호출 없이 바로 수동 입력 폴백
+    const settings = getSettings();
+    if (resolveDragAiProfile(settings) === null) {
+        const manual = window.prompt(
+            `원문 표현을 직접 입력해 주세요 (보조 AI가 꺼져 있어요).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
+            '',
+        );
+        if (manual) registerDragBan(uuid, manual);
+        return;
+    }
+    // 보조 AI 역추적 → 확인 → 등록, 실패 시 수동 입력 폴백
     toastr.info('번역문이네요 — 원문에서 해당 표현을 찾는 중…', '🌀또또');
     try {
         const match = await requestBanTrace(original, term);
