@@ -198,8 +198,9 @@ test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서
     assert.match(prompt, /synonyms, reordered clauses, or a changed point of view/);
     assert.match(prompt, /ABSOLUTE DIALOGUE RULE/);
     assert.match(prompt, /Do not repeat any portion of the latest user's spoken dialogue anywhere/);
-    assert.match(prompt, /"Ice cream, huh\?"/);
-    assert.match(prompt, /"아이스크림이라"/);
+    assert.match(prompt, /"X, huh\?"/);
+    assert.match(prompt, /X is a placeholder for ANY word, phrase, clause, or quoted line/);
+    assert.doesNotMatch(prompt, /[가-힣]/);
     assert.match(prompt, /Changing punctuation, inflection, sentence ending, word order, or framing/);
     assert.match(prompt, /MANDATORY FINAL CHECK/);
     assert.match(prompt, /compare every character dialogue line against the latest user dialogue/);

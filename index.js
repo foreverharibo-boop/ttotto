@@ -14,7 +14,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.2';
+const EXTENSION_VERSION = '1.8.3';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -64,6 +64,7 @@ let runtimeActive = true;
 let eventsRegistered = false;
 let popupOpen = false;
 let settingsHomeParent = null;
+let promptMetricRequestId = 0;
 const registeredEventHandlers = [];
 
 function getContext() {
@@ -1668,6 +1669,33 @@ function updateBanWarning(state) {
         : '';
 }
 
+export async function measurePromptTokens(text, context = getContext()) {
+    const source = String(text ?? '');
+    if (!source) return { count: 0, estimated: false };
+    if (typeof context?.getTokenCountAsync === 'function') {
+        try {
+            const count = Number(await context.getTokenCountAsync(source, 0));
+            if (Number.isFinite(count) && count >= 0) return { count: Math.round(count), estimated: false };
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} 실리 토큰 계산 실패 — 근삿값을 표시합니다.`, error);
+        }
+    }
+    return { count: Math.ceil(source.length / 4), estimated: true };
+}
+
+function updatePromptMetrics(prompt) {
+    const element = document.getElementById('ttotto-prompt-size');
+    if (!element) return;
+    const source = String(prompt ?? '');
+    const requestId = ++promptMetricRequestId;
+    element.textContent = `${source.length}자 · ${source ? '토큰 계산 중…' : '0토큰'}`;
+    if (!source) return;
+    void measurePromptTokens(source).then(({ count, estimated }) => {
+        if (requestId !== promptMetricRequestId || !element.isConnected) return;
+        element.textContent = `${source.length}자 · ${estimated ? '약 ' : ''}${count}토큰`;
+    });
+}
+
 function updateUi(analysisOverride = null) {
     if (!uiReady) return;
     const settings = getSettings();
@@ -1701,7 +1729,7 @@ function updateUi(analysisOverride = null) {
         ? buildGenerationInjection(analysis.prompt, settings, 'normal', null, getContext().chat)
         : '';
     document.getElementById('ttotto-prompt-text').textContent = previewPrompt || '현재 주입할 내용이 없어요.';
-    document.getElementById('ttotto-prompt-size').textContent = `${previewPrompt.length}자`;
+    updatePromptMetrics(previewPrompt);
     document.getElementById('ttotto-run-smart').disabled = smartRunning || !settings.smartAnalysis || !state;
     const skip = document.getElementById('ttotto-skip-once');
     skip.disabled = !state;

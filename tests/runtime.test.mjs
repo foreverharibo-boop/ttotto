@@ -159,6 +159,8 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
     assert.equal(promptCalls.at(-1)[1], '');
 
     assert.match(module.buildGenerationInjection('', { echoPreventionEnabled: true }, 'swipe', context.chat, []), /<ttotto_anti_echo>/);
+    assert.deepEqual(await module.measurePromptTokens('short prompt', { getTokenCountAsync: async () => 7 }), { count: 7, estimated: false });
+    assert.deepEqual(await module.measurePromptTokens('12345678', {}), { count: 2, estimated: true });
 });
 
 test('원문 보존과 같은 이름 카드의 UUID 분리를 엄격하게 처리한다', async () => {

@@ -20,4 +20,5 @@ test('주입문 보기 버튼은 한 줄이고 실제 주입문은 제목 바로
     const previewIndex = html.indexOf('id="ttotto-prompt-preview"');
     const warningIndex = html.indexOf('id="ttotto-ban-warning"');
     assert.ok(headerEnd >= 0 && previewIndex > headerEnd && previewIndex < warningIndex);
+    assert.match(html, /id="ttotto-prompt-size"[^>]*>0자 · 0토큰</);
 });
