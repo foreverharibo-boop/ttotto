@@ -193,13 +193,16 @@ test('영구 금지 항목은 일반 감지 개수 제한과 별개로 항상 �
 test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서술을 함께 금지한다', () => {
     const prompt = buildEchoPreventionInjection();
     assert.match(prompt, /<ttotto_anti_echo>/);
-    assert.match(prompt, /repeat, paraphrase, summarize/);
+    assert.match(prompt, /Do not repeat any portion/);
+    assert.match(prompt, /do not paraphrase, summarize, translate, mirror, or re-narrate/);
     assert.match(prompt, /synonyms, reordered clauses, or a changed point of view/);
-    assert.match(prompt, /echoing the user's last distinctive word or short phrase/);
+    assert.match(prompt, /ABSOLUTE DIALOGUE RULE/);
+    assert.match(prompt, /Do not repeat any portion of the latest user's spoken dialogue anywhere/);
     assert.match(prompt, /"Ice cream, huh\?"/);
     assert.match(prompt, /"아이스크림이라"/);
-    assert.match(prompt, /Respond to its meaning instead of repeating its wording/);
-    assert.match(prompt, /A necessary term may be mentioned later only when it genuinely advances/);
+    assert.match(prompt, /Changing punctuation, inflection, sentence ending, word order, or framing/);
+    assert.match(prompt, /MANDATORY FINAL CHECK/);
+    assert.match(prompt, /compare every character dialogue line against the latest user dialogue/);
     assert.match(prompt, /new reaction, dialogue, action/);
     assert.match(prompt, /never replay the user's contribution/);
 });

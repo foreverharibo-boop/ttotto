@@ -25,20 +25,20 @@
           <button id="ttotto-toggle-preview" class="menu_button" type="button">주입문 보기</button>
         </div>
 
-        <div id="ttotto-ban-warning" class="ttotto-ban-warning" hidden></div>
-        <div id="ttotto-smart-status" class="ttotto-smart-status" hidden></div>
-        <div id="ttotto-pattern-list" class="ttotto-pattern-list"></div>
-        <div id="ttotto-empty" class="ttotto-empty" hidden>
-          <span aria-hidden="true">✨</span>
-          <span>현재 막고 있는 반복이 없어요</span>
-        </div>
-
         <div id="ttotto-prompt-preview" class="ttotto-prompt-preview" hidden>
           <div class="ttotto-preview-head">
             <strong>실제 주입 예정</strong>
             <span id="ttotto-prompt-size" class="ttotto-count">0자</span>
           </div>
           <pre id="ttotto-prompt-text"></pre>
+        </div>
+
+        <div id="ttotto-ban-warning" class="ttotto-ban-warning" hidden></div>
+        <div id="ttotto-smart-status" class="ttotto-smart-status" hidden></div>
+        <div id="ttotto-pattern-list" class="ttotto-pattern-list"></div>
+        <div id="ttotto-empty" class="ttotto-empty" hidden>
+          <span aria-hidden="true">✨</span>
+          <span>현재 막고 있는 반복이 없어요</span>
         </div>
 
         <div class="ttotto-button-row">
@@ -99,7 +99,7 @@
         <label class="ttotto-setting-row" for="ttotto-echo-prevention-enabled">
           <span>
             <strong>직전 유저 말 되받기·에코 방지</strong>
-            <small>유저가 말한 마지막 단어나 짧은 구절을 “아이스크림?”·“아이스크림이라”처럼 받아치거나, 대사·행동을 비슷한 말로 되풀이하지 않게 해요. 필요한 소재 언급은 허용하며 API 호출은 없어요.</small>
+            <small>직전 유저 대사의 일부라도 캐릭터가 그대로 받아 말하거나, 의문형·인용형·비슷한 말로 되풀이하지 않게 해요. 출력 전 전체 대사를 다시 확인하며 API 호출은 없어요.</small>
           </span>
           <input id="ttotto-echo-prevention-enabled" type="checkbox">
         </label>

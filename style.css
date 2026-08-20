@@ -129,6 +129,16 @@
   min-width: 0;
 }
 
+#ttotto-settings #ttotto-toggle-preview {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: fit-content;
+  padding-inline: 0.55em;
+  white-space: nowrap;
+  font-size: 0.78em;
+  line-height: 1.15;
+}
+
 #ttotto-settings .ttotto-pattern-list {
   border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
 }
