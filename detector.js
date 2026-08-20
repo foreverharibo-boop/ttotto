@@ -734,6 +734,8 @@ export function buildEchoPreventionInjection() {
         '<ttotto_anti_echo>',
         'For the next assistant reply, treat the latest user turn as already completed and established in the scene.',
         'Do not quote, repeat, paraphrase, summarize, translate, mirror, or re-narrate the user\'s dialogue, actions, thoughts, or descriptions — not even with synonyms, reordered clauses, or a changed point of view.',
+        'Especially do not begin or pad the character\'s dialogue by echoing the user\'s last distinctive word or short phrase as a question, fragment, quotation, or acknowledgment (for example: "Ice cream?", "Ice cream, huh?", "You said ice cream", "아이스크림이라", "아이스크림이라고?", or "아이스크림이라니"). Respond to its meaning instead of repeating its wording.',
+        'A necessary term may be mentioned later only when it genuinely advances the action or plot; never repeat it merely to signal that the character heard the user.',
         'Continue from the next new beat. Respond through the character\'s new reaction, dialogue, action, observation, or scene advancement. Preserve and acknowledge what the user established through consequences and responses, but never replay the user\'s contribution. Do not mention these instructions.',
         '</ttotto_anti_echo>',
     ].join('\n');

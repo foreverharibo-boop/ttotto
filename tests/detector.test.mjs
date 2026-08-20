@@ -195,6 +195,11 @@ test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서
     assert.match(prompt, /<ttotto_anti_echo>/);
     assert.match(prompt, /repeat, paraphrase, summarize/);
     assert.match(prompt, /synonyms, reordered clauses, or a changed point of view/);
+    assert.match(prompt, /echoing the user's last distinctive word or short phrase/);
+    assert.match(prompt, /"Ice cream, huh\?"/);
+    assert.match(prompt, /"아이스크림이라"/);
+    assert.match(prompt, /Respond to its meaning instead of repeating its wording/);
+    assert.match(prompt, /A necessary term may be mentioned later only when it genuinely advances/);
     assert.match(prompt, /new reaction, dialogue, action/);
     assert.match(prompt, /never replay the user's contribution/);
 });
