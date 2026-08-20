@@ -729,6 +729,16 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     return lines.join('\n');
 }
 
+export function buildEchoPreventionInjection() {
+    return [
+        '<ttotto_anti_echo>',
+        'For the next assistant reply, treat the latest user turn as already completed and established in the scene.',
+        'Do not quote, repeat, paraphrase, summarize, translate, mirror, or re-narrate the user\'s dialogue, actions, thoughts, or descriptions — not even with synonyms, reordered clauses, or a changed point of view.',
+        'Continue from the next new beat. Respond through the character\'s new reaction, dialogue, action, observation, or scene advancement. Preserve and acknowledge what the user established through consequences and responses, but never replay the user\'s contribution. Do not mention these instructions.',
+        '</ttotto_anti_echo>',
+    ].join('\n');
+}
+
 export function fingerprintMessages(messages) {
     const basis = messages.map((message) => `${message.id}:${message.characterUuid ?? ''}:${message.speaker}:${message.text}`).join('\n---\n');
     return stableHash(basis);

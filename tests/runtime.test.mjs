@@ -124,6 +124,43 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
+test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
+    const promptCalls = [];
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: { ttotto: { enabled: true, echoPreventionEnabled: true } },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'echo-test',
+        groupId: null,
+        characterId: 0,
+        name1: 'Dana',
+        name2: 'Peter',
+        groups: [],
+        characters: [{ name: 'Peter', avatar: 'peter.png' }],
+        chat: [{ is_user: true, mes: '*Dana slammed the door.* "Do not follow me."' }],
+        setExtensionPrompt(...args) { promptCalls.push(args); },
+        saveSettingsDebounced() {},
+        saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?echo=${Date.now()}`);
+
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    assert.match(promptCalls.at(-1)[1], /<ttotto_anti_echo>/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /<ttotto_anti_repetition>/);
+
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'continue');
+    assert.equal(promptCalls.at(-1)[1], '');
+
+    context.extensionSettings.ttotto.echoPreventionEnabled = false;
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    assert.equal(promptCalls.at(-1)[1], '');
+
+    assert.match(module.buildGenerationInjection('', { echoPreventionEnabled: true }, 'swipe', context.chat, []), /<ttotto_anti_echo>/);
+});
+
 test('원문 보존과 같은 이름 카드의 UUID 분리를 엄격하게 처리한다', async () => {
     const context = {
         eventTypes: { APP_READY: 'app_ready' },

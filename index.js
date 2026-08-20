@@ -1,4 +1,5 @@
 import {
+    buildEchoPreventionInjection,
     buildInjection,
     detectPatterns,
     fingerprintMessages,
@@ -13,7 +14,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.7.6';
+const EXTENSION_VERSION = '1.8.0';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     sensitivity: 'normal',
     narrationEnabled: true,
     dialogueEnabled: true,
+    echoPreventionEnabled: true,
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -1040,6 +1042,22 @@ function clearInjectedPrompt() {
     }
 }
 
+function chatHasUserTurn(chat) {
+    if (!Array.isArray(chat)) return false;
+    return chat.some((message) => message?.is_user === true || String(message?.role ?? '').toLocaleLowerCase() === 'user');
+}
+
+export function buildGenerationInjection(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
+    const type = String(generationType ?? '').toLocaleLowerCase();
+    const echoApplies = Boolean(settings?.echoPreventionEnabled)
+        && type !== 'continue'
+        && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
+    return [
+        String(analysisPrompt ?? '').trim(),
+        echoApplies ? buildEchoPreventionInjection() : '',
+    ].filter(Boolean).join('\n\n');
+}
+
 globalThis.ttottoGenerationInterceptor = async function ttottoGenerationInterceptor(_chat, _contextSize, _abort, type) {
     clearInjectedPrompt();
     try {
@@ -1058,16 +1076,18 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         // Recheck only the small recent window; rerun the detector only if it changed.
         const recentMessages = collectAssistantMessages();
         const analysis = analyzeCurrentChat(false, recentMessages);
-        if (!analysis.prompt) return;
+        const prompt = buildGenerationInjection(analysis.prompt, settings, type, _chat, getContext().chat);
+        if (!prompt) return;
         getContext().setExtensionPrompt(
             PROMPT_KEY,
-            analysis.prompt,
+            prompt,
             PROMPT_POSITION_IN_CHAT,
             0,
             false,
             PROMPT_ROLE_SYSTEM,
         );
-        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목 주입`);
+        const echoLabel = prompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
+        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel} 주입`);
     } catch (error) {
         clearInjectedPrompt();
         console.error(`${LOG_PREFIX} 생성 전 주입 실패 — 본 채팅 생성은 계속합니다.`, error);
@@ -1661,6 +1681,8 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-sensitivity').value = settings.sensitivity;
     document.getElementById('ttotto-narration-enabled').checked = settings.narrationEnabled;
     document.getElementById('ttotto-dialogue-enabled').checked = settings.dialogueEnabled;
+    const echoCheckbox = document.getElementById('ttotto-echo-prevention-enabled');
+    if (echoCheckbox) echoCheckbox.checked = Boolean(settings.echoPreventionEnabled);
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
     if (structureAiCheckbox) structureAiCheckbox.checked = Boolean(settings.dragStructureAi);
     document.getElementById('ttotto-smart-enabled').checked = settings.smartAnalysis;
@@ -1672,11 +1694,14 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
-    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'}`;
+    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${settings.echoPreventionEnabled ? '방지' : '허용'}`;
 
     renderPatterns(enabled ? analysis.patterns : []);
-    document.getElementById('ttotto-prompt-text').textContent = enabled && analysis.prompt ? analysis.prompt : '현재 주입할 내용이 없어요.';
-    document.getElementById('ttotto-prompt-size').textContent = `${enabled ? analysis.prompt.length : 0}자`;
+    const previewPrompt = enabled
+        ? buildGenerationInjection(analysis.prompt, settings, 'normal', null, getContext().chat)
+        : '';
+    document.getElementById('ttotto-prompt-text').textContent = previewPrompt || '현재 주입할 내용이 없어요.';
+    document.getElementById('ttotto-prompt-size').textContent = `${previewPrompt.length}자`;
     document.getElementById('ttotto-run-smart').disabled = smartRunning || !settings.smartAnalysis || !state;
     const skip = document.getElementById('ttotto-skip-once');
     skip.disabled = !state;
@@ -1788,6 +1813,7 @@ function bindUi() {
     bindSetting('ttotto-sensitivity', 'sensitivity', String);
     bindSetting('ttotto-narration-enabled', 'narrationEnabled', Boolean);
     bindSetting('ttotto-dialogue-enabled', 'dialogueEnabled', Boolean);
+    bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    buildEchoPreventionInjection,
     buildInjection,
     detectPatterns,
     normalizeSmartPattern,
@@ -187,4 +188,13 @@ test('영구 금지 항목은 일반 감지 개수 제한과 별개로 항상 �
     assert.match(prompt, /Never use "beard"/);
     assert.match(prompt, /Avoid A/);
     assert.doesNotMatch(prompt, /Avoid B/);
+});
+
+test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서술을 함께 금지한다', () => {
+    const prompt = buildEchoPreventionInjection();
+    assert.match(prompt, /<ttotto_anti_echo>/);
+    assert.match(prompt, /repeat, paraphrase, summarize/);
+    assert.match(prompt, /synonyms, reordered clauses, or a changed point of view/);
+    assert.match(prompt, /new reaction, dialogue, action/);
+    assert.match(prompt, /never replay the user's contribution/);
 });
