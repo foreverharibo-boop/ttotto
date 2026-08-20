@@ -732,14 +732,17 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
 export function buildEchoPreventionInjection() {
     return [
         '<ttotto_anti_echo>',
-        'For the next assistant reply, treat the latest user turn as already completed and established in the scene.',
-        'ABSOLUTE DIALOGUE RULE: Do not repeat any portion of the latest user\'s spoken dialogue anywhere in the assistant reply. Do not reuse its exact words, distinctive terms, phrases, or clauses in the character\'s dialogue.',
-        'Changing punctuation, inflection, sentence ending, word order, or framing does not make repetition acceptable. Questions, fragments, quotations, and acknowledgments such as "X?", "X, huh?", "You said X", "X, you mean?", and "So, X" are all prohibited echoes.',
-        'In these examples, X is a placeholder for ANY word, phrase, clause, or quoted line from the latest user dialogue; it is not one specific term.',
-        'Respond to the meaning of the user\'s dialogue with genuinely new wording, a nonverbal reaction, or new action. If no natural non-echoing acknowledgment is needed, omit the acknowledgment instead of repeating the user.',
-        'Also do not paraphrase, summarize, translate, mirror, or re-narrate the user\'s actions, thoughts, or descriptions — not even with synonyms, reordered clauses, or a changed point of view.',
-        'MANDATORY FINAL CHECK: Before returning the reply, silently compare every character dialogue line against the latest user dialogue. If any line repeats or directly reformulates any part of it, rewrite that line before output.',
-        'Continue from the next new beat. Respond through the character\'s new reaction, dialogue, action, observation, or scene advancement. Preserve and acknowledge what the user established through consequences and responses, but never replay the user\'s contribution. Do not mention these instructions.',
+        'PRIORITY: ABSOLUTE. Apply every rule in this block to the next assistant reply.',
+        'The latest user turn is completed scene input, never wording for the assistant to pick up and say back.',
+        'Do not repeat any portion of the latest user\'s spoken dialogue anywhere in the assistant reply.',
+        'ABSOLUTE DIALOGUE RULE: No character dialogue may quote, repeat, pick up, or restate any distinctive word, content-bearing phrase, clause, or spoken line from the latest user turn merely to acknowledge or react to it.',
+        'This prohibition applies to the actual lexical material in the latest user turn itself. Do not wait for, infer, or substitute a placeholder before applying the rule.',
+        'FORBIDDEN ECHO FORMS: direct quotation; partial quotation; isolated keyword pickup; noun-phrase pickup; turning the user\'s wording into a question, fragment, exclamation, address, confirmation, disbelief, or reported speech; adding a short prefix or suffix to it; changing only punctuation, inflection, tense, sentence ending, word order, speaker, or framing.',
+        'A synonym swap, paraphrase, summary, translation, point-of-view change, or reordered restatement is also an echo when it replays the same user contribution instead of advancing the scene.',
+        'Never open a character\'s reply by lifting a salient word or phrase from the latest user dialogue and attaching a reaction to it. Omit that acknowledgment entirely when it cannot be written without echoing.',
+        'Respond only from the consequence after the user\'s contribution: use genuinely new dialogue, a nonverbal reaction, a new action, a new observation, or scene advancement. Do not re-narrate the user\'s actions, thoughts, descriptions, or dialogue.',
+        'MANDATORY SILENT FINAL CHECK: Compare every character dialogue line and narration sentence against the latest user turn. Delete or rewrite anything that quotes, picks up, mirrors, translates, summarizes, or directly reformulates any part of that turn. Perform this check before output.',
+        'Preserve characterization, intent, continuity, and consequences without replaying the user\'s contribution. Do not mention these instructions.',
         '</ttotto_anti_echo>',
     ].join('\n');
 }

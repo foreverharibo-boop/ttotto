@@ -193,17 +193,18 @@ test('영구 금지 항목은 일반 감지 개수 제한과 별개로 항상 �
 test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서술을 함께 금지한다', () => {
     const prompt = buildEchoPreventionInjection();
     assert.match(prompt, /<ttotto_anti_echo>/);
-    assert.match(prompt, /Do not repeat any portion/);
-    assert.match(prompt, /do not paraphrase, summarize, translate, mirror, or re-narrate/);
-    assert.match(prompt, /synonyms, reordered clauses, or a changed point of view/);
+    assert.match(prompt, /PRIORITY: ABSOLUTE/);
     assert.match(prompt, /ABSOLUTE DIALOGUE RULE/);
     assert.match(prompt, /Do not repeat any portion of the latest user's spoken dialogue anywhere/);
-    assert.match(prompt, /"X, huh\?"/);
-    assert.match(prompt, /X is a placeholder for ANY word, phrase, clause, or quoted line/);
+    assert.match(prompt, /This prohibition applies to the actual lexical material in the latest user turn itself/);
+    assert.match(prompt, /FORBIDDEN ECHO FORMS: direct quotation; partial quotation; isolated keyword pickup/);
+    assert.match(prompt, /synonym swap, paraphrase, summary, translation, point-of-view change, or reordered restatement/);
+    assert.match(prompt, /Never open a character's reply by lifting a salient word or phrase/);
+    assert.doesNotMatch(prompt, /\bX\b/);
     assert.doesNotMatch(prompt, /[가-힣]/);
-    assert.match(prompt, /Changing punctuation, inflection, sentence ending, word order, or framing/);
-    assert.match(prompt, /MANDATORY FINAL CHECK/);
-    assert.match(prompt, /compare every character dialogue line against the latest user dialogue/);
-    assert.match(prompt, /new reaction, dialogue, action/);
-    assert.match(prompt, /never replay the user's contribution/);
+    assert.match(prompt, /changing only punctuation, inflection, tense, sentence ending, word order, speaker, or framing/);
+    assert.match(prompt, /MANDATORY SILENT FINAL CHECK/);
+    assert.match(prompt, /Compare every character dialogue line and narration sentence against the latest user turn/);
+    assert.match(prompt, /genuinely new dialogue, a nonverbal reaction, a new action/);
+    assert.match(prompt, /without replaying the user's contribution/);
 });
