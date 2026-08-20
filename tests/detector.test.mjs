@@ -171,6 +171,7 @@ test('사용자 설정 수만큼 주입하고 내용 보존 지침을 포함한�
     ];
     const prompt = buildInjection(patterns, 2);
     assert.match(prompt, /Preserve all plot facts/);
+    assert.doesNotMatch(prompt, /Tag-wrapped|HTML-formatted|status panels|trackers|sheets|additional copy/);
     assert.match(prompt, /Avoid A/);
     assert.match(prompt, /Avoid B/);
     assert.doesNotMatch(prompt, /Avoid C/);
