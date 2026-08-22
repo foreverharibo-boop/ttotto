@@ -15,6 +15,12 @@ const STOPWORDS = new Set([
     '다시', '더', '또', '및', '아주', '약간', '이', '저', '그런', '것', '수', '듯', '때', '게', '를', '을',
 ]);
 
+const ECHO_PHRASE_STOPWORDS = new Set([
+    ...STOPWORDS,
+    'am', 'can', 'could', 'did', 'do', 'does', 'don\'t', 'dont', 'just', 'may', 'might', 'must', 'no', 'not',
+    'shall', 'should', 'some', 'would', 'will', 'very',
+]);
+
 const SUBJECT_WORDS = new Set([
     'he', 'she', 'they', 'i', 'we', 'you', 'it', 'him', 'her', 'them',
     '그', '그가', '그는', '그녀', '그녀가', '그녀는', '나는', '내가', '너는', '네가', '우리는',
@@ -231,6 +237,78 @@ export function splitDialogueAndNarration(text, exclusions = {}) {
     if (!dialogue.length && !narration.length && clean) narration.push(clean);
 
     return { dialogue, narration };
+}
+
+function stripOocForEcho(text) {
+    return String(text ?? '')
+        .replace(/\(\s*(?:ooc\b|out\s+of\s+character\b)[\s\S]*?\)/gi, ' ')
+        .replace(/\[\s*(?:ooc\b|out\s+of\s+character\b)[\s\S]*?\]/gi, ' ');
+}
+
+function quotedDialogueOnly(text, exclusions = {}) {
+    const clean = stripOocForEcho(stripNonProse(text, exclusions));
+    const dialogue = [];
+    const regex = /"([^"\n]{1,})"|“([^”\n]{1,})”|‘([^’\n]{1,})’|「([^」\n]{1,})」|『([^』\n]{1,})』/g;
+    let match;
+    while ((match = regex.exec(clean)) !== null) {
+        const spoken = match.slice(1).find(Boolean)?.replace(/\s+/g, ' ').trim();
+        if (spoken) dialogue.push(spoken);
+    }
+    return dialogue;
+}
+
+function echoPhraseCandidate(clause) {
+    const words = String(clause ?? '')
+        .normalize('NFKC')
+        .match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu) ?? [];
+    if (!words.length) return null;
+    if (words.length === 1) {
+        const normalized = words[0].toLocaleLowerCase();
+        if (normalized.length < 4 || ECHO_PHRASE_STOPWORDS.has(normalized)) return null;
+        return { phrase: words[0], score: 20 + normalized.length };
+    }
+
+    let best = null;
+    const maximum = Math.min(6, words.length);
+    for (let size = 2; size <= maximum; size += 1) {
+        for (let start = 0; start + size <= words.length; start += 1) {
+            const slice = words.slice(start, start + size);
+            const normalized = slice.map((word) => word.toLocaleLowerCase());
+            const content = normalized.filter((word) => !ECHO_PHRASE_STOPWORDS.has(word));
+            if (!content.length) continue;
+            const contentChars = content.reduce((sum, word) => sum + word.length, 0);
+            if (content.length === 1 && contentChars < 4) continue;
+            const edgePenalty = (ECHO_PHRASE_STOPWORDS.has(normalized[0]) ? 4 : 0)
+                + (ECHO_PHRASE_STOPWORDS.has(normalized.at(-1)) ? 3 : 0);
+            const wholeSentencePenalty = words.length > 4 && size === words.length ? 5 : 0;
+            const score = content.length * 12 + Math.min(contentChars, 24) + size - edgePenalty - wholeSentencePenalty;
+            if (!best || score > best.score) best = { phrase: slice.join(' '), score };
+        }
+    }
+    return best;
+}
+
+export function extractEchoPhrases(text, exclusions = {}, maxPhrases = 4) {
+    const candidates = [];
+    for (const dialogue of quotedDialogueOnly(text, exclusions)) {
+        const clauses = dialogue.split(/[.!?。！？;；:\n]+|\s+[—–]\s+/).map((part) => part.trim()).filter(Boolean);
+        for (const clause of clauses) {
+            const candidate = echoPhraseCandidate(clause);
+            if (candidate) candidates.push(candidate);
+        }
+    }
+
+    const selected = [];
+    const seen = new Set();
+    for (const candidate of candidates.sort((a, b) => b.score - a.score)) {
+        const key = candidate.phrase.normalize('NFKC').toLocaleLowerCase();
+        if (!key || seen.has(key)) continue;
+        if (selected.some((phrase) => phrase.toLocaleLowerCase().includes(key) || key.includes(phrase.toLocaleLowerCase()))) continue;
+        seen.add(key);
+        selected.push(candidate.phrase);
+        if (selected.length >= Math.max(1, Math.min(6, Number(maxPhrases) || 4))) break;
+    }
+    return selected;
 }
 
 export function splitSentences(text) {
@@ -725,8 +803,11 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     return lines.join('\n');
 }
 
-export function buildEchoPreventionInjection() {
-    return [
+export function buildEchoPreventionInjection(temporaryPhrases = []) {
+    const phrases = [...new Set((temporaryPhrases ?? [])
+        .map((phrase) => String(phrase ?? '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean))].slice(0, 6);
+    const lines = [
         '<ttotto_anti_echo>',
         'PRIORITY: ABSOLUTE. Apply every rule in this block to the next assistant reply.',
         'The latest user turn is completed scene input, never wording for the assistant to pick up and say back.',
@@ -739,8 +820,13 @@ export function buildEchoPreventionInjection() {
         'Respond only from the consequence after the user\'s contribution: use genuinely new dialogue, a nonverbal reaction, a new action, a new observation, or scene advancement. Do not re-narrate the user\'s actions, thoughts, descriptions, or dialogue.',
         'MANDATORY SILENT FINAL CHECK: Compare every character dialogue line and narration sentence against the latest user turn. Delete or rewrite anything that quotes, picks up, mirrors, translates, summarizes, or directly reformulates any part of that turn. Perform this check before output.',
         'Preserve characterization, intent, continuity, and consequences without replaying the user\'s contribution. Do not mention these instructions.',
-        '</ttotto_anti_echo>',
-    ].join('\n');
+    ];
+    if (phrases.length) {
+        lines.push('TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST: The following phrases came only from explicitly quoted dialogue in the latest user turn. Do not quote, repeat, question, acknowledge, translate, or reformulate them in character dialogue. This list expires after this reply:');
+        phrases.forEach((phrase) => lines.push(`- ${JSON.stringify(phrase)}`));
+    }
+    lines.push('</ttotto_anti_echo>');
+    return lines.join('\n');
 }
 
 export function fingerprintMessages(messages) {

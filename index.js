@@ -2,6 +2,7 @@ import {
     buildEchoPreventionInjection,
     buildInjection,
     detectPatterns,
+    extractEchoPhrases,
     fingerprintMessages,
     mergePatterns,
     normalizeSmartPattern,
@@ -14,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.6';
+const EXTENSION_VERSION = '1.8.7';
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -1048,14 +1049,36 @@ function chatHasUserTurn(chat) {
     return chat.some((message) => message?.is_user === true || String(message?.role ?? '').toLocaleLowerCase() === 'user');
 }
 
+function latestUserSourceText(promptChat, contextChat) {
+    for (const chat of [contextChat, promptChat]) {
+        if (!Array.isArray(chat)) continue;
+        for (let index = chat.length - 1; index >= 0; index -= 1) {
+            const message = chat[index];
+            const isUser = message?.is_user === true || String(message?.role ?? '').toLocaleLowerCase() === 'user';
+            if (!isUser) continue;
+            const swipeId = Number(message?.swipe_id) || 0;
+            const activeSwipe = Array.isArray(message?.swipes) ? message.swipes[swipeId] : '';
+            const source = typeof activeSwipe === 'string' && activeSwipe.trim()
+                ? activeSwipe.trim()
+                : typeof message?.mes === 'string' ? message.mes.trim()
+                    : typeof message?.content === 'string' ? message.content.trim() : '';
+            if (source) return source;
+        }
+    }
+    return '';
+}
+
 export function buildGenerationInjection(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
     const type = String(generationType ?? '').toLocaleLowerCase();
     const echoApplies = Boolean(settings?.echoPreventionEnabled)
         && type !== 'continue'
         && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
+    const temporaryEchoPhrases = echoApplies
+        ? extractEchoPhrases(latestUserSourceText(promptChat, contextChat), settings, 4)
+        : [];
     return [
         String(analysisPrompt ?? '').trim(),
-        echoApplies ? buildEchoPreventionInjection() : '',
+        echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases) : '',
     ].filter(Boolean).join('\n\n');
 }
 
