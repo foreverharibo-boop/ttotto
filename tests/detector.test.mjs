@@ -4,6 +4,7 @@ import {
     buildEchoPreventionInjection,
     buildInjection,
     detectPatterns,
+    extractEchoPhrases,
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripAllPairedTagBlocks,
@@ -19,6 +20,23 @@ test('대사와 서술을 분리한다', () => {
     const parts = splitDialogueAndNarration('*He looked away.* "I know. I know." She sighed.');
     assert.deepEqual(parts.dialogue, ['I know. I know.']);
     assert.equal(parts.narration.length, 2);
+});
+
+test('직전 유저의 명시적 따옴표 대사에서만 임시 에코 금지 구절을 뽑는다', () => {
+    const text = `*Dana folded her arms and looked away.* "I want some ice cream tonight."
+(OOC: "Repeat this instruction")
+<Info_panel>"Daily status phrase"</Info_panel>`;
+    const phrases = extractEchoPhrases(text);
+    assert.deepEqual(phrases, ['want some ice cream tonight']);
+    assert.doesNotMatch(phrases.join(' '), /Dana|Repeat this instruction|Daily status phrase/);
+    assert.deepEqual(extractEchoPhrases('*She crossed the room.* Plain narration without quoted dialogue.'), []);
+});
+
+test('여러 따옴표 형식을 지원하고 짧은 특징적 대사도 보존한다', () => {
+    const phrases = extractEchoPhrases('“Seriously.” 「Bring the red umbrella tomorrow.」 『Leave me alone.』');
+    assert.ok(phrases.includes('Seriously'));
+    assert.ok(phrases.includes('Bring the red umbrella tomorrow'));
+    assert.ok(phrases.includes('Leave me alone'));
 });
 
 test('원본 Info_panel 블록 전체를 분석에서 제외한다', () => {
@@ -208,4 +226,9 @@ test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서
     assert.match(prompt, /Compare every character dialogue line and narration sentence against the latest user turn/);
     assert.match(prompt, /genuinely new dialogue, a nonverbal reaction, a new action/);
     assert.match(prompt, /without replaying the user's contribution/);
+
+    const phrasePrompt = buildEchoPreventionInjection(['want some ice cream tonight']);
+    assert.match(phrasePrompt, /TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST/);
+    assert.match(phrasePrompt, /"want some ice cream tonight"/);
+    assert.match(phrasePrompt, /This list expires after this reply/);
 });

@@ -15,7 +15,9 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.7';
+const EXTENSION_VERSION = '1.8.8';
+const BAN_OFFENSE_VERSION = 2;
+const MAX_PROCESSED_BAN_MESSAGES = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -40,6 +42,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     characterUuids: {},
     characterAllowances: {},
     characterBans: {},
+    globalBanIds: {},
     characterHistory: {},
     crossChatMemoryEnabled: false,
     excludeAllTaggedBlocks: true,
@@ -64,6 +67,7 @@ let forceSmartOnNextAnalysis = false;
 let runtimeActive = true;
 let eventsRegistered = false;
 let popupOpen = false;
+let popupEscapeHandlerAttached = false;
 let settingsHomeParent = null;
 let promptMetricRequestId = 0;
 const registeredEventHandlers = [];
@@ -102,6 +106,25 @@ function getSettings() {
     settings.globalBans = Array.isArray(settings.globalBans)
         ? settings.globalBans.filter((term) => typeof term === 'string' && term.trim())
         : [];
+    settings.globalBanIds = settings.globalBanIds && typeof settings.globalBanIds === 'object'
+        ? settings.globalBanIds
+        : {};
+    let globalBanIdsChanged = false;
+    const activeGlobalBanKeys = new Set(settings.globalBans.map(normalizedBanTermKey).filter(Boolean));
+    for (const key of Object.keys(settings.globalBanIds)) {
+        if (activeGlobalBanKeys.has(key)) continue;
+        delete settings.globalBanIds[key];
+        globalBanIdsChanged = true;
+    }
+    for (const term of settings.globalBans) {
+        const key = normalizedBanTermKey(term);
+        if (!key || settings.globalBanIds[key]) continue;
+        settings.globalBanIds[key] = newBanRegistrationId('global', key);
+        globalBanIdsChanged = true;
+    }
+    if (globalBanIdsChanged && typeof context.saveSettingsDebounced === 'function') {
+        context.saveSettingsDebounced();
+    }
     settings.globalStructureBans = Array.isArray(settings.globalStructureBans)
         ? settings.globalStructureBans.filter((ban) => ban && typeof ban === 'object' && String(ban.instruction ?? '').trim())
         : [];
@@ -134,8 +157,9 @@ function createDefaultChatState() {
         enabled: true,
         skipNextGeneration: false,
         lastBanHits: [],
+        banOffenseVersion: BAN_OFFENSE_VERSION,
         banOffenses: {},
-        banOffenseLastKey: '',
+        banOffenseMessageKeys: [],
         ignoredKeys: [],
         ignoredPatterns: [],
         smart: {
@@ -163,8 +187,24 @@ function getChatState(create = true) {
     state.enabled ??= true;
     state.skipNextGeneration = Boolean(state.skipNextGeneration);
     state.lastBanHits = Array.isArray(state.lastBanHits) ? state.lastBanHits.slice(0, 20) : [];
-    state.banOffenses = state.banOffenses && typeof state.banOffenses === 'object' ? state.banOffenses : {};
-    state.banOffenseLastKey = String(state.banOffenseLastKey ?? '');
+    const savedOffenseVersion = Number(state.banOffenseVersion ?? 0);
+    if (savedOffenseVersion < BAN_OFFENSE_VERSION) {
+        // v1.8.7 and earlier scanned raw source (including hidden/tagged blocks)
+        // with substring matching, so their counts cannot be trusted. Discard
+        // them once instead of carrying false flames into the fixed version.
+        state.banOffenses = {};
+        state.banOffenseMessageKeys = [];
+        state.lastBanHits = [];
+        delete state.banOffenseLastKey;
+        state.banOffenseVersion = BAN_OFFENSE_VERSION;
+        saveChatState();
+    } else {
+        state.banOffenseVersion = BAN_OFFENSE_VERSION;
+        state.banOffenses = state.banOffenses && typeof state.banOffenses === 'object' ? state.banOffenses : {};
+        state.banOffenseMessageKeys = Array.isArray(state.banOffenseMessageKeys)
+            ? state.banOffenseMessageKeys.slice(-MAX_PROCESSED_BAN_MESSAGES)
+            : [];
+    }
     state.ignoredKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys : [];
     state.ignoredPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns : [];
     state.smart = {
@@ -215,13 +255,92 @@ function captureOriginalFromEvent(payload) {
     return { message, changed };
 }
 
-function offenseKeyFor(term, characterUuid) {
-    return `${characterUuid || 'global'}|${String(term).toLocaleLowerCase()}`;
+function normalizedBanTermKey(term) {
+    return cleanBanTerm(term).normalize('NFKC').toLocaleLowerCase();
 }
 
-function offenseCountFor(term, characterUuid) {
+function newBanRegistrationId(scope, term) {
+    return `${scope}-${stableLocalId(`${term}|${Date.now()}|${Math.random()}`)}`;
+}
+
+function globalBanIdFor(term, create = true) {
+    const key = normalizedBanTermKey(term);
+    if (!key) return '';
+    const settings = getSettings();
+    if (!settings.globalBanIds[key] && create) {
+        settings.globalBanIds[key] = newBanRegistrationId('global', key);
+        saveSettings();
+    }
+    return String(settings.globalBanIds[key] ?? '');
+}
+
+function offenseKeyFor(term, characterUuid, banId = '') {
+    const scope = characterUuid || 'global';
+    return `${scope}|${banId || normalizedBanTermKey(term)}`;
+}
+
+function offenseCountFor(term, characterUuid, banId = '') {
     const state = getChatState(false);
-    return Number(state?.banOffenses?.[offenseKeyFor(term, characterUuid)]?.count ?? 0);
+    return Number(state?.banOffenses?.[offenseKeyFor(term, characterUuid, banId)]?.count ?? 0);
+}
+
+function resetOffense(term, characterUuid, banId = '') {
+    const state = getChatState(false);
+    if (!state) return;
+    delete state.banOffenses[offenseKeyFor(term, characterUuid, banId)];
+    state.lastBanHits = state.lastBanHits.filter((hit) => (
+        offenseKeyFor(hit.term, hit.characterUuid, hit.banId) !== offenseKeyFor(term, characterUuid, banId)
+    ));
+    saveChatState();
+}
+
+function resetAllOffenses() {
+    const state = getChatState(false);
+    if (!state) return;
+    state.banOffenses = {};
+    state.lastBanHits = [];
+    saveChatState();
+}
+
+function escapeRegularExpression(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function containsExactBanTerm(text, rawTerm) {
+    const term = cleanBanTerm(rawTerm);
+    if (!term) return false;
+    const normalizedText = String(text ?? '').normalize('NFKC');
+    const pieces = term.normalize('NFKC').split(/\s+/).map(escapeRegularExpression);
+    const expression = pieces.join('\\s+');
+    const startsWithWord = /^[\p{L}\p{N}_]/u.test(term);
+    const endsWithWord = /[\p{L}\p{N}_]$/u.test(term);
+    const endsWithHangul = /[가-힣]$/u.test(term);
+    const prefix = startsWithWord ? '(^|[^\\p{L}\\p{N}_])' : '';
+    // Korean particles attach without spaces. Count the registered noun plus
+    // a normal particle as the same visible expression, but reject unrelated
+    // compounds. Latin terms stay strict: anchor does not match anchored.
+    const koreanParticle = '(?:이라고|이라고는|이라도|이라며|이라면|처럼|에서|에게|으로|부터|까지|보다|하고|이나|이며|이고|인듯|인양|은|는|이|가|을|를|의|에|께|로|와|과|도|만|조차|마저|랑|야|아|나|라|들)?';
+    const suffix = endsWithHangul
+        ? `${koreanParticle}(?=$|[^\\p{L}\\p{N}_])`
+        : endsWithWord ? '(?=$|[^\\p{L}\\p{N}_])' : '';
+    return new RegExp(`${prefix}(?:${expression})${suffix}`, 'iu').test(normalizedText);
+}
+
+function banMessageEventKey(message, identity) {
+    const context = getContext();
+    const chat = Array.isArray(context.chat) ? context.chat : [];
+    const index = chat.indexOf(message);
+    const stableId = message?.extra?.message_id
+        ?? message?.extra?.id
+        ?? message?.send_date
+        ?? (index >= 0 ? index : 'detached');
+    return stableLocalId([
+        getChatIdentity(context),
+        identity?.uuid ?? '',
+        stableId,
+        index,
+        Number(message?.swipe_id) || 0,
+    ].join('|'));
 }
 
 function updateBanHitsForMessage(message) {
@@ -233,24 +352,32 @@ function updateBanHitsForMessage(message) {
         return;
     }
     const identity = resolveCharacterIdentity(message);
-    const text = messageText(message).normalize('NFKC').toLocaleLowerCase();
+    const settings = getSettings();
+    // Count only actual prose. Hidden reasoning, info panels, HTML/tag blocks,
+    // code fences and display-only translations are not ban violations.
+    const text = stripNonProse(messageText(message), settings, { clip: false }).normalize('NFKC');
     const characterHits = getCharacterBans(identity?.uuid, false)
         .filter((ban) => ban.type === 'term' && cleanBanTerm(ban.term))
-        .filter((ban) => text.includes(cleanBanTerm(ban.term).toLocaleLowerCase()))
-        .map((ban) => ({ term: cleanBanTerm(ban.term), characterUuid: identity.uuid }));
-    const globalHits = getSettings().globalBans
+        .filter((ban) => containsExactBanTerm(text, ban.term))
+        .map((ban) => ({ term: cleanBanTerm(ban.term), characterUuid: identity.uuid, banId: String(ban.id ?? '') }));
+    const globalHits = settings.globalBans
         .map((term) => cleanBanTerm(term))
-        .filter((term) => term && text.includes(term.toLocaleLowerCase()))
-        .map((term) => ({ term, characterUuid: '' }));
+        .filter((term) => term && containsExactBanTerm(text, term))
+        .map((term) => ({ term, characterUuid: '', banId: globalBanIdFor(term) }));
     state.lastBanHits = [...globalHits, ...characterHits].slice(0, 20);
-    // 재범 카운트 — 같은 메시지를 다시 처리할 때 중복 집계 방지
-    const offenseMesKey = stableLocalId(`${identity?.uuid ?? ''}|${text.length}|${text.slice(0, 500)}`);
-    if (state.lastBanHits.length && state.banOffenseLastKey !== offenseMesKey) {
-        state.banOffenseLastKey = offenseMesKey;
+    // Keep a bounded ledger instead of remembering only the immediately prior
+    // message. Replayed/out-of-order SillyTavern events can no longer recount it.
+    const offenseMesKey = banMessageEventKey(message, identity);
+    const alreadyProcessed = state.banOffenseMessageKeys.includes(offenseMesKey);
+    if (!alreadyProcessed) {
+        state.banOffenseMessageKeys.push(offenseMesKey);
+        state.banOffenseMessageKeys = state.banOffenseMessageKeys.slice(-MAX_PROCESSED_BAN_MESSAGES);
+    }
+    if (state.lastBanHits.length && !alreadyProcessed) {
         for (const hit of state.lastBanHits) {
-            const key = offenseKeyFor(hit.term, hit.characterUuid);
+            const key = offenseKeyFor(hit.term, hit.characterUuid, hit.banId);
             const entry = state.banOffenses[key] ?? { count: 0 };
-            entry.count = Math.min(99, Number(entry.count ?? 0) + 1);
+            entry.count = Math.min(9999, Number(entry.count ?? 0) + 1);
             entry.lastAt = Date.now();
             state.banOffenses[key] = entry;
         }
@@ -526,7 +653,7 @@ function addManualBan(characterUuid, rawTerm) {
     }
     if (bans.length >= 100) return { ok: false, reason: '한 캐릭터에는 최대 100개까지 저장할 수 있어요.' };
     bans.push({
-        id: `term-${stableLocalId(`${term}|${Date.now()}`)}`,
+        id: newBanRegistrationId('term', `${characterUuid}|${normalizedBanTermKey(term)}`),
         type: 'term',
         term,
         label: `금지어: ${term}`,
@@ -562,6 +689,8 @@ function pinPattern(pattern) {
 function removePermanentBan(characterUuid, id) {
     const settings = getSettings();
     const bans = getCharacterBans(characterUuid, false);
+    const removed = bans.find((ban) => ban?.id === id);
+    if (removed?.type === 'term') resetOffense(removed.term, characterUuid, removed.id);
     settings.characterBans[characterUuid] = bans.filter((ban) => ban?.id !== id);
     saveSettings();
 }
@@ -581,7 +710,7 @@ function permanentPatternsForUuids(uuids) {
             ? `Never use or refer to the banned expression ${JSON.stringify(term)} anywhere in this character's narration or dialogue, including trivial inflections, spacing variants, or close paraphrases that name the same concept. Do not mention or discuss this ban.`
             : String(ban.instruction ?? '').trim();
         if (!baseInstruction) return null;
-        const offenses = isTerm ? offenseCountFor(term, uuid) : 0;
+        const offenses = isTerm ? offenseCountFor(term, uuid, String(ban.id ?? '')) : 0;
         return {
             id: `pinned-${uuid}-${ban.id ?? index}`,
             banId: ban.id ?? String(index),
@@ -608,14 +737,16 @@ function permanentPatternsForUuids(uuids) {
 
 // 전역 금지어 → 모든 캐릭터·채팅의 주입에 포함되는 고정 패턴
 function globalBanPatterns() {
-    return getSettings().globalBans.map((rawTerm, index) => {
+    const settings = getSettings();
+    return settings.globalBans.map((rawTerm, index) => {
         const term = cleanBanTerm(rawTerm);
         if (!term) return null;
-        const offenses = offenseCountFor(term, '');
+        const banId = globalBanIdFor(term);
+        const offenses = offenseCountFor(term, '', banId);
         const baseInstruction = `Never use or refer to the banned expression ${JSON.stringify(term)} anywhere in any narration or any character's dialogue, including trivial inflections, spacing variants, or close paraphrases that name the same concept. Do not mention or discuss this ban.`;
         return {
             id: `global-${index}`,
-            banId: `global-${index}`,
+            banId,
             key: `global|${term.toLocaleLowerCase()}`,
             source: 'pinned',
             kind: 'permanent-term',
@@ -634,7 +765,7 @@ function globalBanPatterns() {
         };
     }).filter(Boolean).concat(
         // 전역 구조 금지 — 지시문 그대로 모든 채팅의 주입에 포함
-        getSettings().globalStructureBans.map((ban, index) => ({
+        settings.globalStructureBans.map((ban, index) => ({
             id: `global-structure-${index}`,
             banId: `global-structure-${index}`,
             key: `global-structure|${stableLocalId(String(ban.instruction))}`,
@@ -962,15 +1093,48 @@ function smartPatternsForMessages(state, messages) {
         .filter((pattern) => pattern.scope === 'dialogue' ? settings.dialogueEnabled : settings.narrationEnabled);
 }
 
+function analysisDependencyFingerprint(settings, state) {
+    // A render-independent signature for everything that can alter the prompt.
+    // This prevents a same-text chat from reusing a stale prompt after settings
+    // sync, ban deletion/re-registration, allowance changes, or count resets.
+    return stableLocalId(JSON.stringify({
+        windowSize: settings.windowSize,
+        sensitivity: settings.sensitivity,
+        narrationEnabled: settings.narrationEnabled,
+        dialogueEnabled: settings.dialogueEnabled,
+        smartAnalysis: settings.smartAnalysis,
+        maxInjectedPatterns: settings.maxInjectedPatterns,
+        crossChatMemoryEnabled: settings.crossChatMemoryEnabled,
+        excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
+        excludedTags: settings.excludedTags,
+        excludedClasses: settings.excludedClasses,
+        globalBans: settings.globalBans,
+        globalBanIds: settings.globalBanIds,
+        globalStructureBans: settings.globalStructureBans,
+        characterBans: settings.characterBans,
+        characterAllowances: settings.characterAllowances,
+        banOffenses: state?.banOffenses,
+        ignoredKeys: state?.ignoredKeys,
+        smartLastRunAt: state?.smart?.lastRunAt,
+        smartStale: state?.smart?.stale,
+    }));
+}
+
 function analyzeCurrentChat(force = false, preparedMessages = null) {
     // All source/settings mutations explicitly invalidate the cache. UI refreshes
     // can therefore reuse the finished analysis without rescanning message text.
-    if (!force && analysisCache && !preparedMessages) return analysisCache;
     const settings = getSettings();
     const state = getChatState();
+    const dependencyFingerprint = analysisDependencyFingerprint(settings, state);
+    if (!force
+        && analysisCache
+        && !preparedMessages
+        && analysisCache.dependencyFingerprint === dependencyFingerprint) return analysisCache;
     const messages = preparedMessages ?? collectAssistantMessages();
     const messageFingerprint = fingerprintMessages(messages);
-    if (!force && analysisCache?.messageFingerprint === messageFingerprint) return analysisCache;
+    if (!force
+        && analysisCache?.messageFingerprint === messageFingerprint
+        && analysisCache?.dependencyFingerprint === dependencyFingerprint) return analysisCache;
     migrateLegacyAllowances(state, messages);
     const settingsKey = [
         settings.windowSize,
@@ -1015,6 +1179,7 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
     analysisCache = {
         fingerprint,
         messageFingerprint,
+        dependencyFingerprint,
         messages,
         localPatterns,
         smartPatterns,
@@ -1530,13 +1695,18 @@ function addGlobalBan(rawTerm) {
     }
     if (settings.globalBans.length >= 100) return { ok: false, reason: '전역 금지어는 최대 100개까지 저장할 수 있어요.' };
     settings.globalBans.push(term);
+    settings.globalBanIds[normalizedBanTermKey(term)] = newBanRegistrationId('global', normalizedBanTermKey(term));
     saveSettings();
     return { ok: true };
 }
 
 function removeGlobalBan(term) {
     const settings = getSettings();
+    const key = normalizedBanTermKey(term);
+    const banId = globalBanIdFor(term, false);
+    resetOffense(term, '', banId);
     settings.globalBans = settings.globalBans.filter((item) => item !== term);
+    delete settings.globalBanIds[key];
     saveSettings();
 }
 
@@ -1572,9 +1742,20 @@ function renderGlobalBans() {
     for (const term of bans) {
         const row = document.createElement('div');
         row.className = 'ttotto-ban-item';
-        const offenses = offenseCountFor(cleanBanTerm(term), '');
+        const banId = globalBanIdFor(term);
+        const offenses = offenseCountFor(cleanBanTerm(term), '', banId);
         const text = document.createElement('span');
         text.textContent = `${offenses ? `🔥×${offenses} ` : ''}🌐 ${term}`;
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'menu_button';
+        reset.textContent = '횟수 초기화';
+        reset.hidden = !offenses;
+        reset.addEventListener('click', () => {
+            resetOffense(term, '', banId);
+            invalidateAnalysis();
+            updateUi();
+        });
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'menu_button';
@@ -1584,7 +1765,7 @@ function renderGlobalBans() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, remove);
+        row.append(text, reset, remove);
         list.append(row);
     }
     for (const ban of getSettings().globalStructureBans) {
@@ -1642,8 +1823,21 @@ function renderBanManager() {
         const row = document.createElement('div');
         row.className = 'ttotto-ban-item';
         const text = document.createElement('span');
-        text.textContent = ban.type === 'term' ? `🚫 ${ban.term}` : `📌 ${ban.label}`;
+        const offenses = ban.type === 'term' ? offenseCountFor(ban.term, uuid, String(ban.id ?? '')) : 0;
+        text.textContent = ban.type === 'term'
+            ? `${offenses ? `🔥×${offenses} ` : ''}🚫 ${ban.term}`
+            : `📌 ${ban.label}`;
         if (ban.type !== 'term' && ban.instruction) text.title = ban.instruction;
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'menu_button';
+        reset.textContent = '횟수 초기화';
+        reset.hidden = !offenses;
+        reset.addEventListener('click', () => {
+            resetOffense(ban.term, uuid, String(ban.id ?? ''));
+            invalidateAnalysis();
+            updateUi();
+        });
         const promote = document.createElement('button');
         promote.type = 'button';
         promote.className = 'menu_button';
@@ -1672,7 +1866,7 @@ function renderBanManager() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, promote, remove);
+        row.append(text, reset, promote, remove);
         list.append(row);
     }
     if (!bans.length) {
@@ -2070,6 +2264,14 @@ function bindUi() {
         invalidateAnalysis();
         updateUi();
         toastr.success('현재 캐릭터들의 지난 채팅 기억을 삭제했어요.', '🌀또또');
+    });
+
+    document.getElementById('ttotto-clear-offenses').addEventListener('click', async () => {
+        if (!await confirmAction('🌀또또', '현재 채팅의 불꽃 위반 횟수를 모두 초기화할까요?')) return;
+        resetAllOffenses();
+        invalidateAnalysis();
+        updateUi();
+        toastr.success('현재 채팅의 불꽃 위반 횟수를 초기화했어요.', '🌀또또');
     });
 }
 
@@ -2579,9 +2781,20 @@ function ttottoBuildPopupShell() {
         if (event.target === overlay) ttottoClosePopup();
     });
     overlay.querySelector('#ttotto-popup-close').addEventListener('click', ttottoClosePopup);
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && popupOpen) ttottoClosePopup();
-    });
+    if (!popupEscapeHandlerAttached) {
+        document.addEventListener('keydown', handlePopupEscape);
+        popupEscapeHandlerAttached = true;
+    }
+}
+
+function handlePopupEscape(event) {
+    if (event.key === 'Escape' && popupOpen) ttottoClosePopup();
+}
+
+function detachPopupEscapeHandler() {
+    if (!popupEscapeHandlerAttached || typeof document === 'undefined') return;
+    document.removeEventListener('keydown', handlePopupEscape);
+    popupEscapeHandlerAttached = false;
 }
 
 function ttottoOpenPopup() {
@@ -2781,6 +2994,7 @@ export function onDisable() {
 export function onClean() {
     ttottoClosePopup();
     ttottoRemoveWandButton();
+    detachPopupEscapeHandler();
     document.getElementById('ttotto-overlay')?.remove();
     const context = getContext();
     delete context.extensionSettings[MODULE_NAME];

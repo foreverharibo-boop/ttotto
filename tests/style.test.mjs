@@ -22,3 +22,11 @@ test('주입문 보기 버튼은 한 줄이고 실제 주입문은 제목 바로
     assert.ok(headerEnd >= 0 && previewIndex > headerEnd && previewIndex < warningIndex);
     assert.match(html, /id="ttotto-prompt-size"[^>]*>0자 · 0토큰</);
 });
+
+test('불꽃 초기화 버튼과 긴 금지어 행은 모바일에서도 넘치지 않는다', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    assert.match(html, /id="ttotto-clear-offenses"/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-item \{[\s\S]*?flex-wrap:\s*wrap/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-item > span \{[\s\S]*?overflow-wrap:\s*anywhere/);
+});

@@ -311,11 +311,18 @@
 
 #ttotto-settings .ttotto-ban-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+}
+
+#ttotto-settings .ttotto-ban-item > span {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 #ttotto-settings .ttotto-ban-item .menu_button {

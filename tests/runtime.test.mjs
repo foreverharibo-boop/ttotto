@@ -1,6 +1,118 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+test('금지어는 독립된 실제 표현일 때만 일치한다', async () => {
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {}, chatMetadata: {},
+        chatId: 'exact-ban-test', groupId: null, characterId: 0,
+        characters: [], groups: [], chat: [],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?exact-ban=${Date.now()}`);
+    assert.equal(module.containsExactBanTerm('The anchor dropped.', 'anchor'), true);
+    assert.equal(module.containsExactBanTerm('He was anchored in place.', 'anchor'), false);
+    assert.equal(module.containsExactBanTerm('His jawline tightened.', 'jaw'), false);
+    assert.equal(module.containsExactBanTerm('His jaw tightened.', 'jaw'), true);
+    assert.equal(module.containsExactBanTerm('A SHIVERS   DOWN HER SPINE reaction.', 'shivers down her spine'), true);
+    assert.equal(module.containsExactBanTerm('포식자가 다가왔다.', '포식자'), true);
+    assert.equal(module.containsExactBanTerm('포식자처럼 다가왔다.', '포식자'), true);
+});
+
+test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메시지당 한 번만 센다', async () => {
+    const listeners = new Map();
+    const promptCalls = [];
+    const eventTypes = {
+        APP_READY: 'app_ready',
+        MESSAGE_RECEIVED: 'message_received',
+        GENERATION_ENDED: 'generation_ended',
+        GENERATION_STOPPED: 'generation_stopped',
+    };
+    const context = {
+        eventTypes,
+        eventSource: {
+            on(event, handler) {
+                if (!listeners.has(event)) listeners.set(event, new Set());
+                listeners.get(event).add(handler);
+            },
+            removeListener(event, handler) { listeners.get(event)?.delete(handler); },
+        },
+        extensionSettings: {
+            ttotto: {
+                enabled: true,
+                globalBans: ['anchor', 'jaw'],
+                globalBanIds: { anchor: 'global-anchor-id', jaw: 'global-jaw-id' },
+                characterUuids: { 'peter.png': 'uuid-peter' },
+                characterAllowances: {}, characterBans: {}, characterHistory: {},
+                excludeAllTaggedBlocks: true,
+            },
+        },
+        chatMetadata: {
+            ttotto: {
+                enabled: true,
+                banOffenseVersion: 1,
+                banOffenses: { 'global|anchor': { count: 74 } },
+                banOffenseLastKey: 'old-broken-key',
+                lastBanHits: [{ term: 'anchor', characterUuid: '' }],
+                smart: { patterns: [], messageKeys: [] },
+            },
+        },
+        chatId: 'ban-counter-test', groupId: null, characterId: 0,
+        name1: 'User', name2: 'Peter', groups: [],
+        characters: [{ name: 'Peter', avatar: 'peter.png' }],
+        chat: [],
+        setExtensionPrompt(...args) { promptCalls.push(args); },
+        saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?ban-counter=${Date.now()}`);
+    module.onEnable();
+    const receive = (payload) => {
+        for (const handler of listeners.get(eventTypes.MESSAGE_RECEIVED) ?? []) handler(payload);
+    };
+
+    context.chat.push({
+        mes: '<think>anchor jaw</think><Info_panel>anchor</Info_panel><div>jaw</div>He remained anchored in place.',
+        extra: { display_text: '화면 번역문에는 anchor와 jaw가 있음' },
+        name: 'Peter', original_avatar: 'peter.png', send_date: 1,
+    });
+    receive(0);
+    assert.equal(context.chatMetadata.ttotto.banOffenseVersion, 2);
+    assert.deepEqual(context.chatMetadata.ttotto.banOffenses, {});
+    assert.deepEqual(context.chatMetadata.ttotto.lastBanHits, []);
+
+    context.chat.push({
+        mes: 'He dropped the anchor and rubbed his jaw.',
+        extra: { display_text: '그는 무언가를 내리고 턱을 문질렀다.' },
+        name: 'Peter', original_avatar: 'peter.png', send_date: 2,
+    });
+    receive(1);
+    context.chat[1].mes = 'He dropped the anchor and rubbed his jaw again after a display update.';
+    receive(1);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 1);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-jaw-id'].count, 1);
+
+    context.chat.push({
+        mes: 'The anchor scraped across the floor.',
+        name: 'Peter', original_avatar: 'peter.png', send_date: 3,
+    });
+    receive(2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-jaw-id'].count, 1);
+
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.match(promptCalls.at(-1)[1], /violated 2 time\(s\)/);
+
+    context.extensionSettings.ttotto.globalBanIds.anchor = 'global-anchor-new-registration';
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-new-registration'], undefined);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /violated 2 time\(s\)/);
+    module.onDisable();
+});
+
 test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다', async () => {
     const listeners = new Map();
     const promptCalls = [];
@@ -138,7 +250,11 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
         name2: 'Peter',
         groups: [],
         characters: [{ name: 'Peter', avatar: 'peter.png' }],
-        chat: [{ is_user: true, mes: '*Dana slammed the door.* "Do not follow me."' }],
+        chat: [{
+            is_user: true,
+            mes: '*Dana slammed the door.* "Do not follow me."',
+            extra: { display_text: '*다나가 문을 닫았다.* “따라오지 마.”' },
+        }],
         setExtensionPrompt(...args) { promptCalls.push(args); },
         saveSettingsDebounced() {},
         saveMetadataDebounced() {},
@@ -149,7 +265,21 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
 
     await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
     assert.match(promptCalls.at(-1)[1], /<ttotto_anti_echo>/);
+    assert.match(promptCalls.at(-1)[1], /TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST/);
+    assert.match(promptCalls.at(-1)[1], /follow me/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /Dana slammed the door/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /따라오지 마/);
     assert.doesNotMatch(promptCalls.at(-1)[1], /<ttotto_anti_repetition>/);
+
+    context.chat.push({ is_user: true, mes: '*Dana pointed outside.* “Bring the red umbrella tomorrow.”' });
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    assert.match(promptCalls.at(-1)[1], /Bring the red umbrella tomorrow/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /follow me/);
+
+    context.chat.push({ is_user: true, mes: '*Dana silently crossed the room without speaking.*' });
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    assert.match(promptCalls.at(-1)[1], /<ttotto_anti_echo>/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST/);
 
     await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'continue');
     assert.equal(promptCalls.at(-1)[1], '');
