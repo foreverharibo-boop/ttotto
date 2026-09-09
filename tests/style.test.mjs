@@ -59,3 +59,10 @@ test('금지 추가 입력칸과 버튼은 같은 바깥 크기이고 영구 해
     assert.match(js, /detailRow\.append\(example, meta\)/);
     assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
 });
+
+test('드래그 보조 AI 설명은 선택칸 아래 전체 너비의 한 줄이다', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    assert.match(css, /#ttotto-settings \.ttotto-field > small \{[\s\S]*?grid-column:\s*1\s*\/\s*-1[\s\S]*?white-space:\s*nowrap/);
+    assert.match(html, /구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요\./);
+});
