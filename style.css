@@ -96,11 +96,25 @@
 #ttotto-settings .ttotto-tab {
   width: 100%;
   margin: 0;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 #ttotto-settings .ttotto-tab.is-active {
-  filter: brightness(1.15);
-  box-shadow: inset 0 -2px 0 var(--SmartThemeQuoteColor, currentColor);
+  border-color: var(--SmartThemeQuoteColor, currentColor) !important;
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--SmartThemeQuoteColor, currentColor) !important;
+}
+
+#ttotto-settings .ttotto-tab:not(.is-active) {
+  border-color: color-mix(in srgb, currentColor 18%, transparent) !important;
+  background: transparent !important;
+}
+
+#ttotto-settings .ttotto-tab:focus:not(:focus-visible) {
+  outline: none !important;
 }
 
 #ttotto-settings .ttotto-count,
@@ -270,6 +284,22 @@
   border-radius: 9px;
 }
 
+#ttotto-settings .ttotto-offense-guide {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0;
+  padding: 9px 10px;
+  border-left: 3px solid #e7a424;
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, #e7a424 10%, transparent);
+}
+
+#ttotto-settings .ttotto-offense-guide small {
+  opacity: 0.74;
+  font-size: 0.86em;
+  line-height: 1.4;
+}
+
 #ttotto-settings .ttotto-subsection > small,
 #ttotto-settings .ttotto-stack-field > span {
   display: block;
@@ -309,26 +339,103 @@
   margin: 0;
 }
 
-#ttotto-settings .ttotto-ban-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+#ttotto-settings .ttotto-ban-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
 }
 
-#ttotto-settings .ttotto-ban-item > span {
-  flex: 1 1 140px;
+#ttotto-settings .ttotto-ban-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 58%, transparent);
+}
+
+#ttotto-settings .ttotto-ban-copy {
+  display: grid;
+  gap: 3px;
   min-width: 0;
+}
+
+#ttotto-settings .ttotto-ban-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+#ttotto-settings .ttotto-ban-name {
+  min-width: 0;
+  font-size: 0.94em;
   overflow-wrap: anywhere;
 }
 
-#ttotto-settings .ttotto-ban-item .menu_button {
+#ttotto-settings .ttotto-ban-meta {
+  opacity: 0.66;
+  font-size: 0.78em;
+  line-height: 1.25;
+}
+
+#ttotto-settings .ttotto-offense-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55em;
+  padding: 0.1em 0.5em;
+  border: 1px solid color-mix(in srgb, #e7a424 52%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, #e7a424 13%, transparent);
+  font-size: 0.76em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+#ttotto-settings .ttotto-offense-proof {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.7;
+  font: inherit;
+  font-size: 0.78em;
+  line-height: 1.3;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#ttotto-settings button.ttotto-offense-proof {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 30%, transparent);
+  text-underline-offset: 2px;
+}
+
+#ttotto-settings .ttotto-ban-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+#ttotto-settings .ttotto-ban-actions .menu_button {
   flex: 0 0 auto;
   width: auto;
   margin: 0;
+  padding-inline: 0.55em;
+  font-size: 0.78em;
+  white-space: nowrap;
 }
 
 #ttotto-settings .ttotto-stack-field {
@@ -401,6 +508,14 @@
 
   #ttotto-settings .ttotto-ban-compose {
     grid-template-columns: 1fr;
+  }
+
+  #ttotto-settings .ttotto-ban-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #ttotto-settings .ttotto-ban-actions {
+    justify-content: flex-start;
   }
 }
 

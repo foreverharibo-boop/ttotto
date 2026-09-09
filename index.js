@@ -15,9 +15,9 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.8';
-const BAN_OFFENSE_VERSION = 2;
-const MAX_PROCESSED_BAN_MESSAGES = 1000;
+const EXTENSION_VERSION = '1.8.9';
+const BAN_OFFENSE_VERSION = 3;
+const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
@@ -71,6 +71,7 @@ let popupEscapeHandlerAttached = false;
 let settingsHomeParent = null;
 let promptMetricRequestId = 0;
 const registeredEventHandlers = [];
+const pendingBanRenderKeys = new Set();
 
 function getContext() {
     return SillyTavern.getContext();
@@ -153,13 +154,12 @@ function saveSettings() {
 
 function createDefaultChatState() {
     return {
-        version: 4,
+        version: 5,
         enabled: true,
         skipNextGeneration: false,
         lastBanHits: [],
         banOffenseVersion: BAN_OFFENSE_VERSION,
         banOffenses: {},
-        banOffenseMessageKeys: [],
         ignoredKeys: [],
         ignoredPatterns: [],
         smart: {
@@ -183,27 +183,35 @@ function getChatState(create = true) {
     if (!metadata[CHAT_STATE_KEY] && create) metadata[CHAT_STATE_KEY] = createDefaultChatState();
     const state = metadata[CHAT_STATE_KEY];
     if (!state || typeof state !== 'object') return null;
-    state.version = 4;
+    state.version = 5;
     state.enabled ??= true;
     state.skipNextGeneration = Boolean(state.skipNextGeneration);
     state.lastBanHits = Array.isArray(state.lastBanHits) ? state.lastBanHits.slice(0, 20) : [];
     const savedOffenseVersion = Number(state.banOffenseVersion ?? 0);
     if (savedOffenseVersion < BAN_OFFENSE_VERSION) {
-        // v1.8.7 and earlier scanned raw source (including hidden/tagged blocks)
-        // with substring matching, so their counts cannot be trusted. Discard
-        // them once instead of carrying false flames into the fixed version.
+        // v1.8.8 and earlier counts cannot be trusted: old releases scanned raw
+        // hidden/tagged text, and v1.8.8 still depended on the user's analysis
+        // exclusion setting. Start the evidence-backed counter cleanly once.
         state.banOffenses = {};
-        state.banOffenseMessageKeys = [];
         state.lastBanHits = [];
+        delete state.banOffenseMessageKeys;
         delete state.banOffenseLastKey;
         state.banOffenseVersion = BAN_OFFENSE_VERSION;
         saveChatState();
     } else {
         state.banOffenseVersion = BAN_OFFENSE_VERSION;
         state.banOffenses = state.banOffenses && typeof state.banOffenses === 'object' ? state.banOffenses : {};
-        state.banOffenseMessageKeys = Array.isArray(state.banOffenseMessageKeys)
-            ? state.banOffenseMessageKeys.slice(-MAX_PROCESSED_BAN_MESSAGES)
-            : [];
+        delete state.banOffenseMessageKeys;
+        delete state.banOffenseLastKey;
+        for (const [key, rawEntry] of Object.entries(state.banOffenses)) {
+            const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+            entry.evidence = Array.isArray(entry.evidence)
+                ? entry.evidence.filter((item) => item && typeof item === 'object' && item.messageKey).slice(-MAX_OFFENSE_EVIDENCE)
+                : [];
+            entry.count = entry.evidence.length;
+            if (!entry.count) delete state.banOffenses[key];
+            else state.banOffenses[key] = entry;
+        }
     }
     state.ignoredKeys = Array.isArray(state.ignoredKeys) ? state.ignoredKeys : [];
     state.ignoredPatterns = Array.isArray(state.ignoredPatterns) ? state.ignoredPatterns : [];
@@ -243,14 +251,24 @@ function saveCapturedOriginal() {
     }
 }
 
-function captureOriginalFromEvent(payload) {
+function resolveEventMessage(payload) {
     const context = getContext();
     const chat = Array.isArray(context.chat) ? context.chat : [];
-    let message = payload && typeof payload === 'object' && typeof payload.mes === 'string' ? payload : null;
+    if (payload && typeof payload === 'object') {
+        if (typeof payload.mes === 'string') return payload;
+        if (payload.message && typeof payload.message.mes === 'string') return payload.message;
+        for (const key of ['messageId', 'message_id', 'mesId', 'mes_id', 'index']) {
+            const candidate = Number(payload[key]);
+            if (Number.isInteger(candidate) && candidate >= 0 && chat[candidate]) return chat[candidate];
+        }
+    }
     const index = Number(payload);
-    if (!message && Number.isInteger(index) && index >= 0) message = chat[index];
-    if (!message) message = [...chat].reverse().find((item) => item && !item.is_user && !item.is_system);
-    const changed = preserveOriginalMessageText(message);
+    return Number.isInteger(index) && index >= 0 ? chat[index] ?? null : null;
+}
+
+function captureOriginalFromEvent(payload, { overwrite = false } = {}) {
+    const message = resolveEventMessage(payload);
+    const changed = preserveOriginalMessageText(message, { overwrite });
     if (changed) saveCapturedOriginal();
     return { message, changed };
 }
@@ -281,7 +299,13 @@ function offenseKeyFor(term, characterUuid, banId = '') {
 
 function offenseCountFor(term, characterUuid, banId = '') {
     const state = getChatState(false);
-    return Number(state?.banOffenses?.[offenseKeyFor(term, characterUuid, banId)]?.count ?? 0);
+    const entry = state?.banOffenses?.[offenseKeyFor(term, characterUuid, banId)];
+    return Array.isArray(entry?.evidence) ? entry.evidence.length : 0;
+}
+
+function offenseRecordFor(term, characterUuid, banId = '') {
+    const state = getChatState(false);
+    return state?.banOffenses?.[offenseKeyFor(term, characterUuid, banId)] ?? null;
 }
 
 function resetOffense(term, characterUuid, banId = '') {
@@ -326,36 +350,86 @@ export function containsExactBanTerm(text, rawTerm) {
     return new RegExp(`${prefix}(?:${expression})${suffix}`, 'iu').test(normalizedText);
 }
 
-function banMessageEventKey(message, identity) {
+export function stripBanCounterText(text) {
+    const withoutReasoning = String(text ?? '').replace(
+        /<(think(?:ing)?|reasoning|analysis|reflection|scratchpad)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi,
+        ' ',
+    );
+    // The offense counter deliberately ignores the user's repetition-analysis
+    // exclusions. A hidden/tagged block must never create a flame, even when
+    // the user chose to analyze some tagged prose for repetition elsewhere.
+    return stripNonProse(withoutReasoning, { excludeAllTaggedBlocks: true }, { clip: false })
+        .normalize('NFKC')
+        .trim();
+}
+
+function banMessageBaseKey(message, identity) {
     const context = getContext();
     const chat = Array.isArray(context.chat) ? context.chat : [];
     const index = chat.indexOf(message);
     const stableId = message?.extra?.message_id
         ?? message?.extra?.id
         ?? message?.send_date
-        ?? (index >= 0 ? index : 'detached');
+        ?? message?.gen_started
+        ?? (index >= 0 ? `index:${index}` : 'detached');
     return stableLocalId([
         getChatIdentity(context),
         identity?.uuid ?? '',
         stableId,
-        index,
-        Number(message?.swipe_id) || 0,
     ].join('|'));
+}
+
+function banRenderedMessageKey(message) {
+    const identity = resolveCharacterIdentity(message);
+    return `${banMessageBaseKey(message, identity)}|swipe:${Number(message?.swipe_id) || 0}`;
+}
+
+function offenseSnippet(text, term) {
+    const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    const folded = clean.toLocaleLowerCase();
+    const needle = cleanBanTerm(term).toLocaleLowerCase();
+    const found = folded.indexOf(needle);
+    const center = found >= 0 ? found : 0;
+    const start = Math.max(0, center - 55);
+    const end = Math.min(clean.length, center + Math.max(needle.length, 12) + 70);
+    return `${start ? '…' : ''}${clean.slice(start, end).trim()}${end < clean.length ? '…' : ''}`;
+}
+
+function normalizeOffenseEntry(entry, hit) {
+    const normalized = entry && typeof entry === 'object' ? entry : {};
+    normalized.term = hit.term;
+    normalized.characterUuid = hit.characterUuid;
+    normalized.banId = hit.banId;
+    normalized.evidence = Array.isArray(normalized.evidence) ? normalized.evidence : [];
+    return normalized;
 }
 
 function updateBanHitsForMessage(message) {
     const state = getChatState(false);
     if (!state) return;
     if (!message || message.is_user || message.is_system) {
-        state.lastBanHits = [];
-        saveChatState();
         return;
     }
     const identity = resolveCharacterIdentity(message);
     const settings = getSettings();
-    // Count only actual prose. Hidden reasoning, info panels, HTML/tag blocks,
-    // code fences and display-only translations are not ban violations.
-    const text = stripNonProse(messageText(message), settings, { clip: false }).normalize('NFKC');
+    const text = stripBanCounterText(messageText(message));
+    const messageBaseKey = banMessageBaseKey(message, identity);
+    const swipeId = Number(message?.swipe_id) || 0;
+    const messageKey = `${messageBaseKey}|swipe:${swipeId}`;
+    const chatIndex = Array.isArray(getContext().chat) ? getContext().chat.indexOf(message) : -1;
+
+    // Re-render, edit and swipe events all replace the evidence for this one
+    // message. They never increment a free-floating number.
+    for (const [key, rawEntry] of Object.entries(state.banOffenses)) {
+        const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+        const evidence = Array.isArray(entry.evidence) ? entry.evidence : [];
+        entry.evidence = evidence.filter((item) => item?.messageBaseKey !== messageBaseKey);
+        entry.count = entry.evidence.length;
+        if (!entry.count) delete state.banOffenses[key];
+        else state.banOffenses[key] = entry;
+    }
+
     const characterHits = getCharacterBans(identity?.uuid, false)
         .filter((ban) => ban.type === 'term' && cleanBanTerm(ban.term))
         .filter((ban) => containsExactBanTerm(text, ban.term))
@@ -365,24 +439,59 @@ function updateBanHitsForMessage(message) {
         .filter((term) => term && containsExactBanTerm(text, term))
         .map((term) => ({ term, characterUuid: '', banId: globalBanIdFor(term) }));
     state.lastBanHits = [...globalHits, ...characterHits].slice(0, 20);
-    // Keep a bounded ledger instead of remembering only the immediately prior
-    // message. Replayed/out-of-order SillyTavern events can no longer recount it.
-    const offenseMesKey = banMessageEventKey(message, identity);
-    const alreadyProcessed = state.banOffenseMessageKeys.includes(offenseMesKey);
-    if (!alreadyProcessed) {
-        state.banOffenseMessageKeys.push(offenseMesKey);
-        state.banOffenseMessageKeys = state.banOffenseMessageKeys.slice(-MAX_PROCESSED_BAN_MESSAGES);
+
+    for (const hit of state.lastBanHits) {
+        const key = offenseKeyFor(hit.term, hit.characterUuid, hit.banId);
+        const entry = normalizeOffenseEntry(state.banOffenses[key], hit);
+        entry.evidence.push({
+            messageKey,
+            messageBaseKey,
+            chatIndex: chatIndex >= 0 ? chatIndex : null,
+            swipeId,
+            snippet: offenseSnippet(text, hit.term),
+            recordedAt: Date.now(),
+        });
+        entry.evidence = entry.evidence.slice(-MAX_OFFENSE_EVIDENCE);
+        entry.count = entry.evidence.length;
+        entry.lastAt = entry.evidence.at(-1)?.recordedAt ?? Date.now();
+        state.banOffenses[key] = entry;
     }
-    if (state.lastBanHits.length && !alreadyProcessed) {
-        for (const hit of state.lastBanHits) {
-            const key = offenseKeyFor(hit.term, hit.characterUuid, hit.banId);
-            const entry = state.banOffenses[key] ?? { count: 0 };
-            entry.count = Math.min(9999, Number(entry.count ?? 0) + 1);
-            entry.lastAt = Date.now();
-            state.banOffenses[key] = entry;
-        }
-        invalidateAnalysis(); // 강화 주입이 다음 생성에 바로 반영되도록
+    invalidateAnalysis();
+    saveChatState();
+}
+
+function reconcileOffenseEvidence() {
+    const state = getChatState(false);
+    if (!state) return;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const liveMessages = new Map();
+    for (const message of chat) {
+        if (!message || message.is_user || message.is_system) continue;
+        const identity = resolveCharacterIdentity(message);
+        liveMessages.set(banMessageBaseKey(message, identity), { message, identity });
     }
+
+    for (const [key, rawEntry] of Object.entries(state.banOffenses)) {
+        const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+        const term = cleanBanTerm(entry.term);
+        entry.evidence = (Array.isArray(entry.evidence) ? entry.evidence : []).filter((item) => {
+            const live = liveMessages.get(item?.messageBaseKey);
+            if (!live || !term) return false;
+            if ((Number(live.message?.swipe_id) || 0) !== Number(item.swipeId ?? 0)) return false;
+            return containsExactBanTerm(stripBanCounterText(messageText(live.message)), term);
+        }).map((item) => {
+            const live = liveMessages.get(item.messageBaseKey);
+            const chatIndex = chat.indexOf(live.message);
+            return { ...item, chatIndex: chatIndex >= 0 ? chatIndex : null };
+        });
+        entry.count = entry.evidence.length;
+        if (!entry.count) delete state.banOffenses[key];
+        else state.banOffenses[key] = entry;
+    }
+    state.lastBanHits = state.lastBanHits.filter((hit) => (
+        state.banOffenses[offenseKeyFor(hit.term, hit.characterUuid, hit.banId)]
+    ));
+    invalidateAnalysis();
     saveChatState();
 }
 
@@ -409,31 +518,25 @@ function activeSwipeMetadata(message) {
 }
 
 export function findStoredOriginal(message) {
-    // Feather keeps the real SillyTavern source in the active swipe / mes and puts
-    // the Korean rendering only in extra.display_text. Always trust the canonical
-    // SillyTavern source first and never inspect display_text.
     const activeSwipeId = Number(message?.swipe_id) || 0;
-    const activeSwipe = Array.isArray(message?.swipes) ? message.swipes[activeSwipeId] : '';
-    const sillySource = typeof activeSwipe === 'string' && activeSwipe.trim()
-        ? activeSwipe.trim()
-        : typeof message?.mes === 'string' ? message.mes.trim() : '';
-    if (sillySource.length >= 8) return sillySource;
-
     const swipeMetadata = activeSwipeMetadata(message);
     const storedSwipeId = Number(message?.extra?.ttotto_source_swipe_id);
     const messageSourceMatchesSwipe = !Number.isInteger(storedSwipeId) || storedSwipeId === activeSwipeId;
     const featherRecord = message?.extra?.feather_translations?.[String(activeSwipeId)];
-    const featherSources = [
+    // Prefer immutable pre-translation snapshots. Some translators replace
+    // message.mes or the active swipe instead of using extra.display_text.
+    const preservedSources = [
+        readNestedString(swipeMetadata, ['extra', 'ttotto_source_text']),
+        messageSourceMatchesSwipe ? readNestedString(message, ['extra', 'ttotto_source_text']) : '',
         typeof featherRecord?.source === 'string' ? featherRecord.source.trim() : '',
         typeof message?.extra?.feather_active?.source === 'string' ? message.extra.feather_active.source.trim() : '',
     ];
-    for (const candidate of featherSources) {
+    for (const candidate of preservedSources) {
         if (candidate.length >= 8) return candidate;
     }
 
     const sources = [swipeMetadata, message];
     const paths = [
-        ['extra', 'ttotto_source_text'],
         ['extra', 'original_text'],
         ['extra', 'original_mes'],
         ['extra', 'originalMessage'],
@@ -448,33 +551,71 @@ export function findStoredOriginal(message) {
 
     for (const source of sources) {
         for (const path of paths) {
-            if (source === message && path[1] === 'ttotto_source_text' && !messageSourceMatchesSwipe) continue;
             const candidate = readNestedString(source, path);
             if (candidate.length >= 8) return candidate;
         }
     }
+
+    const activeSwipe = Array.isArray(message?.swipes) ? message.swipes[activeSwipeId] : '';
+    const sillySource = typeof activeSwipe === 'string' && activeSwipe.trim()
+        ? activeSwipe.trim()
+        : typeof message?.mes === 'string' ? message.mes.trim() : '';
+    if (sillySource.length >= 8) return sillySource;
     return '';
 }
 
-export function preserveOriginalMessageText(message) {
+function liveOriginalCandidate(message, { preferLive = false } = {}) {
+    const activeSwipeId = Number(message?.swipe_id) || 0;
+    const swipeMetadata = activeSwipeMetadata(message);
+    const activeSwipe = Array.isArray(message?.swipes) ? message.swipes[activeSwipeId] : '';
+    const liveSource = typeof activeSwipe === 'string' && activeSwipe.trim()
+        ? activeSwipe.trim()
+        : typeof message?.mes === 'string' ? message.mes.trim() : '';
+    if (preferLive && liveSource.length >= 8) return liveSource;
+    const featherRecord = message?.extra?.feather_translations?.[String(activeSwipeId)];
+    const externalSources = [
+        typeof featherRecord?.source === 'string' ? featherRecord.source.trim() : '',
+        typeof message?.extra?.feather_active?.source === 'string' ? message.extra.feather_active.source.trim() : '',
+    ];
+    const externalPaths = [
+        ['extra', 'original_text'],
+        ['extra', 'original_mes'],
+        ['extra', 'originalMessage'],
+        ['extra', 'source_text'],
+        ['extra', 'translation', 'original'],
+        ['extra', 'translator', 'original'],
+        ['extra', 'feather', 'original'],
+        ['extra', 'featherTranslator', 'original'],
+        ['extra', 'feather_original'],
+        ['extra', 'featherOriginal'],
+    ];
+    for (const source of [swipeMetadata, message]) {
+        for (const path of externalPaths) externalSources.push(readNestedString(source, path));
+    }
+    for (const candidate of externalSources) {
+        if (candidate.length >= 8) return candidate;
+    }
+    return liveSource;
+}
+
+export function preserveOriginalMessageText(message, { overwrite = false } = {}) {
     if (!message || typeof message !== 'object') return false;
     const swipeId = Number(message.swipe_id) || 0;
-    const activeSwipe = Array.isArray(message.swipes) ? message.swipes[swipeId] : '';
-    const text = typeof activeSwipe === 'string' && activeSwipe.trim()
-        ? activeSwipe.trim()
-        : typeof message.mes === 'string' ? message.mes.trim() : '';
+    const text = liveOriginalCandidate(message, { preferLive: overwrite });
     if (text.length < 8) return false;
     const swipeMetadata = activeSwipeMetadata(message);
     let changed = false;
     if (swipeMetadata) {
         swipeMetadata.extra = swipeMetadata.extra && typeof swipeMetadata.extra === 'object' ? swipeMetadata.extra : {};
-        if (swipeMetadata.extra.ttotto_source_text !== text) {
+        if ((overwrite || !swipeMetadata.extra.ttotto_source_text) && swipeMetadata.extra.ttotto_source_text !== text) {
             swipeMetadata.extra.ttotto_source_text = text;
             changed = true;
         }
     }
     message.extra = message.extra && typeof message.extra === 'object' ? message.extra : {};
-    if (message.extra.ttotto_source_text !== text || Number(message.extra.ttotto_source_swipe_id) !== swipeId) {
+    const storedMatchesSwipe = Number(message.extra.ttotto_source_swipe_id) === swipeId;
+    if ((overwrite || !storedMatchesSwipe || !message.extra.ttotto_source_text)
+        && (message.extra.ttotto_source_text !== text || !storedMatchesSwipe)) {
         message.extra.ttotto_source_text = text;
         message.extra.ttotto_source_swipe_id = swipeId;
         changed = true;
@@ -1734,6 +1875,52 @@ function removeGlobalStructureBan(instruction) {
     saveSettings();
 }
 
+function createBanInfo(label, metaText, offenseRecord = null) {
+    const copy = document.createElement('div');
+    copy.className = 'ttotto-ban-copy';
+    const titleRow = document.createElement('div');
+    titleRow.className = 'ttotto-ban-title-row';
+    const name = document.createElement('strong');
+    name.className = 'ttotto-ban-name';
+    name.textContent = label;
+    titleRow.append(name);
+
+    const evidence = Array.isArray(offenseRecord?.evidence) ? offenseRecord.evidence : [];
+    if (evidence.length) {
+        const badge = document.createElement('span');
+        badge.className = 'ttotto-offense-badge';
+        badge.textContent = `🔥 본문 ${evidence.length}개 답변`;
+        titleRow.append(badge);
+    }
+
+    const meta = document.createElement('small');
+    meta.className = 'ttotto-ban-meta';
+    meta.textContent = metaText;
+    copy.append(titleRow, meta);
+
+    const latest = evidence.at(-1);
+    if (latest?.snippet) {
+        const canJump = latest.chatIndex !== null;
+        const proof = document.createElement(canJump ? 'button' : 'span');
+        proof.className = 'ttotto-offense-proof';
+        proof.textContent = `${canJump ? `#${latest.chatIndex + 1} ` : ''}“${latest.snippet}”`;
+        if (canJump) {
+            proof.type = 'button';
+            proof.title = '감지된 원문 메시지로 이동';
+            proof.addEventListener('click', () => jumpToMessage(latest.chatIndex));
+        }
+        copy.append(proof);
+    }
+    return copy;
+}
+
+function createBanActions(...buttons) {
+    const actions = document.createElement('div');
+    actions.className = 'ttotto-ban-actions';
+    actions.append(...buttons.filter(Boolean));
+    return actions;
+}
+
 function renderGlobalBans() {
     const list = document.getElementById('ttotto-global-ban-list');
     if (!list) return;
@@ -1744,12 +1931,12 @@ function renderGlobalBans() {
         row.className = 'ttotto-ban-item';
         const banId = globalBanIdFor(term);
         const offenses = offenseCountFor(cleanBanTerm(term), '', banId);
-        const text = document.createElement('span');
-        text.textContent = `${offenses ? `🔥×${offenses} ` : ''}🌐 ${term}`;
+        const record = offenseRecordFor(cleanBanTerm(term), '', banId);
+        const info = createBanInfo(term, '전역 금지어 · 모든 캐릭터 · 매 생성', record);
         const reset = document.createElement('button');
         reset.type = 'button';
         reset.className = 'menu_button';
-        reset.textContent = '횟수 초기화';
+        reset.textContent = '초기화';
         reset.hidden = !offenses;
         reset.addEventListener('click', () => {
             resetOffense(term, '', banId);
@@ -1765,15 +1952,14 @@ function renderGlobalBans() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, reset, remove);
+        row.append(info, createBanActions(reset, remove));
         list.append(row);
     }
     for (const ban of getSettings().globalStructureBans) {
         const row = document.createElement('div');
         row.className = 'ttotto-ban-item';
-        const text = document.createElement('span');
-        text.textContent = `🧱 ${ban.label}`;
-        text.title = ban.instruction;
+        const info = createBanInfo(ban.label, '전역 구조 금지 · 모든 캐릭터 · 매 생성');
+        info.title = ban.instruction;
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'menu_button';
@@ -1783,7 +1969,7 @@ function renderGlobalBans() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, remove);
+        row.append(info, createBanActions(remove));
         list.append(row);
     }
     if (!bans.length && !getSettings().globalStructureBans.length) {
@@ -1822,16 +2008,18 @@ function renderBanManager() {
     for (const ban of bans) {
         const row = document.createElement('div');
         row.className = 'ttotto-ban-item';
-        const text = document.createElement('span');
         const offenses = ban.type === 'term' ? offenseCountFor(ban.term, uuid, String(ban.id ?? '')) : 0;
-        text.textContent = ban.type === 'term'
-            ? `${offenses ? `🔥×${offenses} ` : ''}🚫 ${ban.term}`
-            : `📌 ${ban.label}`;
-        if (ban.type !== 'term' && ban.instruction) text.title = ban.instruction;
+        const record = ban.type === 'term' ? offenseRecordFor(ban.term, uuid, String(ban.id ?? '')) : null;
+        const info = createBanInfo(
+            ban.type === 'term' ? ban.term : ban.label,
+            ban.type === 'term' ? '캐릭터 금지어 · 매 생성' : '캐릭터 구조 금지 · 매 생성',
+            record,
+        );
+        if (ban.type !== 'term' && ban.instruction) info.title = ban.instruction;
         const reset = document.createElement('button');
         reset.type = 'button';
         reset.className = 'menu_button';
-        reset.textContent = '횟수 초기화';
+        reset.textContent = '초기화';
         reset.hidden = !offenses;
         reset.addEventListener('click', () => {
             resetOffense(ban.term, uuid, String(ban.id ?? ''));
@@ -1866,7 +2054,7 @@ function renderBanManager() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(text, reset, promote, remove);
+        row.append(info, createBanActions(reset, promote, remove));
         list.append(row);
     }
     if (!bans.length) {
@@ -1882,7 +2070,7 @@ function updateBanWarning(state) {
     const hits = state?.lastBanHits ?? [];
     warning.hidden = !hits.length;
     warning.textContent = hits.length
-        ? `⚠️ 방금 답변에 영구 금지어가 다시 나왔어요: ${hits.map((item) => item.term).join(', ')} · 필요하면 재생성해 주세요.`
+        ? `⚠️ 최근 확인된 원문 본문에 영구 금지어가 나왔어요: ${hits.map((item) => item.term).join(', ')} · 아래 근거 문구를 확인해 주세요.`
         : '';
 }
 
@@ -2267,11 +2455,11 @@ function bindUi() {
     });
 
     document.getElementById('ttotto-clear-offenses').addEventListener('click', async () => {
-        if (!await confirmAction('🌀또또', '현재 채팅의 불꽃 위반 횟수를 모두 초기화할까요?')) return;
+        if (!await confirmAction('🌀또또', '현재 채팅의 원문 본문 위반 기록을 모두 초기화할까요? 금지어 자체는 그대로 유지돼요.')) return;
         resetAllOffenses();
         invalidateAnalysis();
         updateUi();
-        toastr.success('현재 채팅의 불꽃 위반 횟수를 초기화했어요.', '🌀또또');
+        toastr.success('현재 채팅의 위반 기록만 초기화했어요. 금지어는 그대로 유지돼요.', '🌀또또');
     });
 }
 
@@ -2896,17 +3084,23 @@ function registerEvents() {
         clearTimeout(sourceMutationTimer);
         sourceMutationTimer = null;
         pendingSourceMutationPayload = null;
+        // Preserve the pre-translation source now, but do not create a flame
+        // until SillyTavern confirms that the character message was rendered.
         const { message } = captureOriginalFromEvent(payload);
-        updateBanHitsForMessage(message);
+        if (message && !message.is_user && !message.is_system) {
+            pendingBanRenderKeys.add(banRenderedMessageKey(message));
+            while (pendingBanRenderKeys.size > 20) pendingBanRenderKeys.delete(pendingBanRenderKeys.values().next().value);
+        }
         scheduleAnalysis({ smart: true, delay: 350 });
     });
     const handleHistoryMutation = () => {
         markSmartResultsStale();
         scheduleAnalysis({ smart: true, forceSmart: true, delay: 250 });
     };
-    const handleSourceMutation = (payload) => {
-        const { changed } = captureOriginalFromEvent(payload);
-        if (!changed) return;
+    const handleSourceMutation = (payload, { overwrite = false, count = false } = {}) => {
+        const { message, changed } = captureOriginalFromEvent(payload, { overwrite });
+        if (count && message) updateBanHitsForMessage(message);
+        if (!changed && !count) return;
         handleHistoryMutation();
     };
     const scheduleSourceMutation = (payload) => {
@@ -2919,12 +3113,29 @@ function registerEvents() {
             if (runtimeActive) handleSourceMutation(pending);
         }, 450);
     };
-    listen('MESSAGE_EDITED', handleSourceMutation);
+    listen('CHARACTER_MESSAGE_RENDERED', (payload) => {
+        const { message, changed } = captureOriginalFromEvent(payload);
+        if (!message) return;
+        const renderKey = banRenderedMessageKey(message);
+        if (!pendingBanRenderKeys.delete(renderKey)) return;
+        updateBanHitsForMessage(message);
+        if (changed) handleHistoryMutation();
+    });
+    listen('MESSAGE_EDITED', (payload) => handleSourceMutation(payload, { overwrite: true, count: true }));
     // MESSAGE_UPDATED can fire repeatedly while another extension is rendering
     // or while text is streaming. Collapse the burst and ignore display-only updates.
     listen('MESSAGE_UPDATED', scheduleSourceMutation);
-    listen('MESSAGE_DELETED', handleHistoryMutation);
-    listen('MESSAGE_SWIPED', handleSourceMutation);
+    listen('MESSAGE_DELETED', () => {
+        reconcileOffenseEvidence();
+        handleHistoryMutation();
+    });
+    listen('MESSAGE_SWIPED', (payload) => handleSourceMutation(payload, { count: true }));
+    listen('MESSAGE_SWIPE_DELETED', (payload) => {
+        const { message } = captureOriginalFromEvent(payload);
+        if (message) updateBanHitsForMessage(message);
+        else reconcileOffenseEvidence();
+        handleHistoryMutation();
+    });
     listen('GENERATION_ENDED', clearInjectedPrompt);
     listen('GENERATION_STOPPED', clearInjectedPrompt);
     listen('CHAT_CHANGED', () => {
@@ -2933,6 +3144,7 @@ function registerEvents() {
         clearTimeout(sourceMutationTimer);
         sourceMutationTimer = null;
         pendingSourceMutationPayload = null;
+        pendingBanRenderKeys.clear();
         smartForcePending = false;
         forceSmartOnNextAnalysis = false;
         clearInjectedPrompt();
@@ -2981,6 +3193,7 @@ export function onDisable() {
     clearTimeout(sourceMutationTimer);
     sourceMutationTimer = null;
     pendingSourceMutationPayload = null;
+    pendingBanRenderKeys.clear();
     smartForcePending = false;
     forceSmartOnNextAnalysis = false;
     smartAbortController?.abort();
