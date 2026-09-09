@@ -231,4 +231,15 @@ test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서
     assert.match(phrasePrompt, /TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST/);
     assert.match(phrasePrompt, /"want some ice cream tonight"/);
     assert.match(phrasePrompt, /This list expires after this reply/);
+
+    const strongPrompt = buildEchoPreventionInjection(
+        ['one phrase', 'two phrase', 'three phrase', 'four phrase', 'five phrase', 'six phrase', 'seven phrase', 'eight phrase', 'nine phrase'],
+        true,
+    );
+    assert.match(strongPrompt, /STRICT MODE — HARD OUTPUT CONSTRAINT/);
+    assert.match(strongPrompt, /entire response invalid/);
+    assert.match(strongPrompt, /MANDATORY TWO-PASS VALIDATION/);
+    assert.match(strongPrompt, /"eight phrase"/);
+    assert.doesNotMatch(strongPrompt, /"nine phrase"/);
+    assert.doesNotMatch(prompt, /STRICT MODE — HARD OUTPUT CONSTRAINT/);
 });

@@ -66,3 +66,13 @@ test('드래그 보조 AI 설명은 선택칸 아래 전체 너비의 한 줄이
     assert.match(css, /#ttotto-settings \.ttotto-field > small \{[\s\S]*?grid-column:\s*1\s*\/\s*-1[\s\S]*?white-space:\s*nowrap/);
     assert.match(html, /구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요\./);
 });
+
+test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제공된다', async () => {
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    const normalIndex = html.indexOf('id="ttotto-echo-prevention-enabled"');
+    const strongIndex = html.indexOf('id="ttotto-echo-prevention-strong"');
+    const profileIndex = html.indexOf('id="ttotto-drag-ai-profile"');
+    assert.ok(normalIndex >= 0 && strongIndex > normalIndex && profileIndex > strongIndex);
+    assert.match(html, /에코 방지 강화 모드/);
+    assert.match(html, /최대 8개/);
+});

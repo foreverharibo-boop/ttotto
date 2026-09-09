@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.13';
+const EXTENSION_VERSION = '1.8.14';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     narrationEnabled: true,
     dialogueEnabled: true,
     echoPreventionEnabled: true,
+    echoPreventionStrong: false,
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -134,6 +135,7 @@ function getSettings() {
         : {};
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
+    settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
     if (!(smartTokens >= 2000 && smartTokens <= 65536)) settings.smartMaxTokens = 20000;
@@ -1379,12 +1381,13 @@ export function buildGenerationInjection(analysisPrompt, settings, generationTyp
     const echoApplies = Boolean(settings?.echoPreventionEnabled)
         && type !== 'continue'
         && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
+    const strongEcho = echoApplies && Boolean(settings?.echoPreventionStrong);
     const temporaryEchoPhrases = echoApplies
-        ? extractEchoPhrases(latestUserSourceText(promptChat, contextChat), settings, 4)
+        ? extractEchoPhrases(latestUserSourceText(promptChat, contextChat), settings, strongEcho ? 8 : 4)
         : [];
     return [
         String(analysisPrompt ?? '').trim(),
-        echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases) : '',
+        echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases, strongEcho) : '',
     ].filter(Boolean).join('\n\n');
 }
 
@@ -2144,6 +2147,11 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-dialogue-enabled').checked = settings.dialogueEnabled;
     const echoCheckbox = document.getElementById('ttotto-echo-prevention-enabled');
     if (echoCheckbox) echoCheckbox.checked = Boolean(settings.echoPreventionEnabled);
+    const strongEchoCheckbox = document.getElementById('ttotto-echo-prevention-strong');
+    if (strongEchoCheckbox) {
+        strongEchoCheckbox.checked = Boolean(settings.echoPreventionStrong);
+        strongEchoCheckbox.disabled = !settings.echoPreventionEnabled;
+    }
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
     if (structureAiCheckbox) structureAiCheckbox.checked = Boolean(settings.dragStructureAi);
     document.getElementById('ttotto-smart-enabled').checked = settings.smartAnalysis;
@@ -2155,7 +2163,7 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
-    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${settings.echoPreventionEnabled ? '방지' : '허용'}`;
+    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${settings.echoPreventionEnabled ? (settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
 
     renderPatterns(enabled ? analysis.patterns : []);
     const previewPrompt = enabled
@@ -2275,6 +2283,7 @@ function bindUi() {
     bindSetting('ttotto-narration-enabled', 'narrationEnabled', Boolean);
     bindSetting('ttotto-dialogue-enabled', 'dialogueEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
+    bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);

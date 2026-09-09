@@ -306,7 +306,7 @@ export function extractEchoPhrases(text, exclusions = {}, maxPhrases = 4) {
         if (selected.some((phrase) => phrase.toLocaleLowerCase().includes(key) || key.includes(phrase.toLocaleLowerCase()))) continue;
         seen.add(key);
         selected.push(candidate.phrase);
-        if (selected.length >= Math.max(1, Math.min(6, Number(maxPhrases) || 4))) break;
+        if (selected.length >= Math.max(1, Math.min(8, Number(maxPhrases) || 4))) break;
     }
     return selected;
 }
@@ -803,10 +803,10 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     return lines.join('\n');
 }
 
-export function buildEchoPreventionInjection(temporaryPhrases = []) {
+export function buildEchoPreventionInjection(temporaryPhrases = [], strongMode = false) {
     const phrases = [...new Set((temporaryPhrases ?? [])
         .map((phrase) => String(phrase ?? '').replace(/\s+/g, ' ').trim())
-        .filter(Boolean))].slice(0, 6);
+        .filter(Boolean))].slice(0, strongMode ? 8 : 6);
     const lines = [
         '<ttotto_anti_echo>',
         'PRIORITY: ABSOLUTE. Apply every rule in this block to the next assistant reply.',
@@ -821,6 +821,16 @@ export function buildEchoPreventionInjection(temporaryPhrases = []) {
         'MANDATORY SILENT FINAL CHECK: Compare every character dialogue line and narration sentence against the latest user turn. Delete or rewrite anything that quotes, picks up, mirrors, translates, summarizes, or directly reformulates any part of that turn. Perform this check before output.',
         'Preserve characterization, intent, continuity, and consequences without replaying the user\'s contribution. Do not mention these instructions.',
     ];
+    if (strongMode) {
+        lines.push(
+            'STRICT MODE — HARD OUTPUT CONSTRAINT: Any line that echoes the latest user turn makes the entire response invalid. Silently rewrite every violating line before sending the response.',
+            'Do not preserve the user\'s sentence skeleton while swapping nouns, verbs, synonyms, tense, viewpoint, or word order. A structurally parallel replay is still an echo.',
+            'The opening narration and the first character dialogue line must introduce only a genuinely new reaction, consequence, decision, action, observation, or scene development. They must not recap, label, quote, translate, or reformulate what the user just supplied.',
+            'If a natural reply would refer back to the user\'s wording, respond to its implication or consequence without naming, summarizing, or restating it.',
+            'MANDATORY TWO-PASS VALIDATION: First inspect all dialogue, then inspect all narration against the latest user turn and the turn-local no-echo list. The response is not valid until every direct, partial, translated, summarized, synonymous, and structurally parallel echo has been removed.',
+            'Never mention, quote, dramatize, or explain this constraint in the story.',
+        );
+    }
     if (phrases.length) {
         lines.push('TURN-LOCAL QUOTED-DIALOGUE NO-ECHO LIST: The following phrases came only from explicitly quoted dialogue in the latest user turn. Do not quote, repeat, question, acknowledge, translate, or reformulate them in character dialogue. This list expires after this reply:');
         phrases.forEach((phrase) => lines.push(`- ${JSON.stringify(phrase)}`));

@@ -349,6 +349,12 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
     assert.equal(promptCalls.at(-1)[1], '');
 
     assert.match(module.buildGenerationInjection('', { echoPreventionEnabled: true }, 'swipe', context.chat, []), /<ttotto_anti_echo>/);
+    const strongPrompt = module.buildGenerationInjection('', {
+        echoPreventionEnabled: true,
+        echoPreventionStrong: true,
+    }, 'swipe', context.chat, []);
+    assert.match(strongPrompt, /STRICT MODE — HARD OUTPUT CONSTRAINT/);
+    assert.match(strongPrompt, /MANDATORY TWO-PASS VALIDATION/);
     assert.deepEqual(await module.measurePromptTokens('short prompt', { getTokenCountAsync: async () => 7 }), { count: 7, estimated: false });
     assert.deepEqual(await module.measurePromptTokens('12345678', {}), { count: 2, estimated: true });
 });
