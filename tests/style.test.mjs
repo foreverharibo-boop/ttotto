@@ -23,10 +23,22 @@ test('주입문 보기 버튼은 한 줄이고 실제 주입문은 제목 바로
     assert.match(html, /id="ttotto-prompt-size"[^>]*>0자 · 0토큰</);
 });
 
-test('불꽃 초기화 버튼과 긴 금지어 행은 모바일에서도 넘치지 않는다', async () => {
+test('위반 기록과 긴 금지어 행은 모바일에서도 넘치지 않는다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     assert.match(html, /id="ttotto-clear-offenses"/);
-    assert.match(css, /#ttotto-settings \.ttotto-ban-item \{[\s\S]*?flex-wrap:\s*wrap/);
-    assert.match(css, /#ttotto-settings \.ttotto-ban-item > span \{[\s\S]*?overflow-wrap:\s*anywhere/);
+    assert.match(html, /불꽃은 실제 위반 기록이에요/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-item \{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-name \{[\s\S]*?overflow-wrap:\s*anywhere/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-meta-row \{[\s\S]*?display:\s*flex[\s\S]*?justify-content:\s*space-between/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-actions \{[\s\S]*?flex-wrap:\s*nowrap/);
+});
+
+test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(css, /#ttotto-settings \.ttotto-tab\.is-active \{[\s\S]*?border-color:\s*rgba\(150,\s*150,\s*150,\s*0\.48\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-tab\.is-active \{[\s\S]*?background:\s*transparent\s*!important/);
+    assert.match(css, /#ttotto-settings \.ttotto-tab:not\(\.is-active\) \{[\s\S]*?box-shadow:\s*none|#ttotto-settings \.ttotto-tab \{[\s\S]*?box-shadow:\s*none/);
+    assert.match(js, /button\.classList\.toggle\('is-active', active\)/);
 });

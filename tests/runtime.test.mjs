@@ -19,6 +19,11 @@ test('금지어는 독립된 실제 표현일 때만 일치한다', async () => 
     assert.equal(module.containsExactBanTerm('A SHIVERS   DOWN HER SPINE reaction.', 'shivers down her spine'), true);
     assert.equal(module.containsExactBanTerm('포식자가 다가왔다.', '포식자'), true);
     assert.equal(module.containsExactBanTerm('포식자처럼 다가왔다.', '포식자'), true);
+    assert.equal(
+        module.stripBanCounterText('<thinking>청년을 피해야 한다.</thinking><status>청년</status>그는 문을 닫았다.'),
+        '그는 문을 닫았다.',
+    );
+    assert.equal(module.stripBanCounterText('<thinking>청년을 피해야 한다.'), '');
 });
 
 test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메시지당 한 번만 센다', async () => {
@@ -27,6 +32,10 @@ test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메�
     const eventTypes = {
         APP_READY: 'app_ready',
         MESSAGE_RECEIVED: 'message_received',
+        CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+        MESSAGE_EDITED: 'message_edited',
+        MESSAGE_DELETED: 'message_deleted',
+        MESSAGE_SWIPED: 'message_swiped',
         GENERATION_ENDED: 'generation_ended',
         GENERATION_STOPPED: 'generation_stopped',
     };
@@ -46,7 +55,7 @@ test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메�
                 globalBanIds: { anchor: 'global-anchor-id', jaw: 'global-jaw-id' },
                 characterUuids: { 'peter.png': 'uuid-peter' },
                 characterAllowances: {}, characterBans: {}, characterHistory: {},
-                excludeAllTaggedBlocks: true,
+                excludeAllTaggedBlocks: false,
             },
         },
         chatMetadata: {
@@ -73,14 +82,21 @@ test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메�
     const receive = (payload) => {
         for (const handler of listeners.get(eventTypes.MESSAGE_RECEIVED) ?? []) handler(payload);
     };
+    const render = (payload) => {
+        for (const handler of listeners.get(eventTypes.CHARACTER_MESSAGE_RENDERED) ?? []) handler(payload);
+    };
+    const emit = (event, payload) => {
+        for (const handler of listeners.get(event) ?? []) handler(payload);
+    };
 
     context.chat.push({
-        mes: '<think>anchor jaw</think><Info_panel>anchor</Info_panel><div>jaw</div>He remained anchored in place.',
+        mes: '<thinking>anchor jaw</thinking><Info_panel>anchor</Info_panel><div>jaw</div>He remained anchored in place.',
         extra: { display_text: '화면 번역문에는 anchor와 jaw가 있음' },
         name: 'Peter', original_avatar: 'peter.png', send_date: 1,
     });
     receive(0);
-    assert.equal(context.chatMetadata.ttotto.banOffenseVersion, 2);
+    render(0);
+    assert.equal(context.chatMetadata.ttotto.banOffenseVersion, 3);
     assert.deepEqual(context.chatMetadata.ttotto.banOffenses, {});
     assert.deepEqual(context.chatMetadata.ttotto.lastBanHits, []);
 
@@ -90,16 +106,21 @@ test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메�
         name: 'Peter', original_avatar: 'peter.png', send_date: 2,
     });
     receive(1);
-    context.chat[1].mes = 'He dropped the anchor and rubbed his jaw again after a display update.';
-    receive(1);
+    assert.deepEqual(context.chatMetadata.ttotto.banOffenses, {}, '렌더링 전에는 세지 않음');
+    context.chat[1].mes = '화면 번역문에는 금지된 영어 표현이 없음';
+    render(1);
+    render(1);
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 1);
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-jaw-id'].count, 1);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].evidence.length, 1);
+    assert.match(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].evidence[0].snippet, /anchor/i);
 
     context.chat.push({
         mes: 'The anchor scraped across the floor.',
         name: 'Peter', original_avatar: 'peter.png', send_date: 3,
     });
     receive(2);
+    render(2);
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 2);
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-jaw-id'].count, 1);
 
@@ -110,6 +131,45 @@ test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메�
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-new-registration'], undefined);
     assert.doesNotMatch(promptCalls.at(-1)[1], /violated 2 time\(s\)/);
+
+    context.chat[1].mes = 'He quietly closed the door.';
+    emit(eventTypes.MESSAGE_EDITED, 1);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 1);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-jaw-id'], undefined);
+
+    context.chat.splice(2, 1);
+    emit(eventTypes.MESSAGE_DELETED, 2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'], undefined);
+
+    context.extensionSettings.ttotto.globalBanIds.anchor = 'global-anchor-id';
+    context.chat.push({
+        mes: 'He waited without speaking.', swipe_id: 0,
+        swipes: ['He waited without speaking.', 'He dropped the anchor.'],
+        swipe_info: [{ extra: {} }, { extra: {} }],
+        name: 'Peter', original_avatar: 'peter.png', send_date: 4,
+    });
+    receive(2);
+    render(2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'], undefined);
+    context.chat[2].swipe_id = 1;
+    context.chat[2].mes = 'He dropped the anchor.';
+    emit(eventTypes.MESSAGE_SWIPED, 2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'].count, 1);
+    context.chat[2].swipe_id = 0;
+    context.chat[2].mes = 'He waited without speaking.';
+    emit(eventTypes.MESSAGE_SWIPED, 2);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'], undefined);
+
+    context.chat.push({
+        mes: 'An old history message mentions the anchor.',
+        name: 'Peter', original_avatar: 'peter.png', send_date: 5,
+    });
+    render(3);
+    assert.equal(
+        context.chatMetadata.ttotto.banOffenses['global|global-anchor-id'],
+        undefined,
+        '채팅을 다시 열며 과거 메시지가 렌더링돼도 새 위반으로 세지 않음',
+    );
     module.onDisable();
 });
 
@@ -189,7 +249,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.ok(listeners.get(eventTypes.GENERATION_ENDED)?.size);
     assert.ok(listeners.get(eventTypes.GENERATION_STOPPED)?.size);
     assert.ok(listeners.get(eventTypes.MESSAGE_UPDATED)?.size);
-    assert.equal(listeners.get(eventTypes.CHARACTER_MESSAGE_RENDERED)?.size ?? 0, 0);
+    assert.ok(listeners.get(eventTypes.CHARACTER_MESSAGE_RENDERED)?.size);
 
     context.extensionSettings.ttotto = {
         enabled: true,
@@ -354,9 +414,17 @@ test('원문 보존과 같은 이름 카드의 UUID 분리를 엄격하게 처�
     assert.equal(module.findStoredOriginal(translated), 'His jaw tightened as he looked away.');
 
     translated.mes = 'He folded his arms after the native edit.';
-    assert.equal(module.findStoredOriginal(translated), 'He folded his arms after the native edit.');
-    assert.equal(module.preserveOriginalMessageText(translated), true);
+    assert.equal(module.findStoredOriginal(translated), 'His jaw tightened as he looked away.');
+    assert.equal(module.preserveOriginalMessageText(translated, { overwrite: true }), true);
     assert.equal(translated.extra.ttotto_source_text, 'He folded his arms after the native edit.');
+
+    const overwrittenByTranslator = {
+        mes: '그 청년은 문을 닫았다.',
+        extra: { original_mes: 'The man closed the door.' },
+    };
+    assert.equal(module.findStoredOriginal(overwrittenByTranslator), 'The man closed the door.');
+    assert.equal(module.preserveOriginalMessageText(overwrittenByTranslator), true);
+    assert.equal(overwrittenByTranslator.extra.ttotto_source_text, 'The man closed the door.');
 
     const swiped = {
         mes: 'First original sentence.',

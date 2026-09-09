@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.9';
+const EXTENSION_VERSION = '1.8.10';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1896,7 +1896,10 @@ function createBanInfo(label, metaText, offenseRecord = null) {
     const meta = document.createElement('small');
     meta.className = 'ttotto-ban-meta';
     meta.textContent = metaText;
-    copy.append(titleRow, meta);
+    const metaRow = document.createElement('div');
+    metaRow.className = 'ttotto-ban-meta-row';
+    metaRow.append(meta);
+    copy.append(titleRow, metaRow);
 
     const latest = evidence.at(-1);
     if (latest?.snippet) {
@@ -1919,6 +1922,11 @@ function createBanActions(...buttons) {
     actions.className = 'ttotto-ban-actions';
     actions.append(...buttons.filter(Boolean));
     return actions;
+}
+
+function appendBanActions(info, actions) {
+    info.querySelector('.ttotto-ban-meta-row')?.append(actions);
+    return info;
 }
 
 function renderGlobalBans() {
@@ -1952,7 +1960,7 @@ function renderGlobalBans() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(info, createBanActions(reset, remove));
+        row.append(appendBanActions(info, createBanActions(reset, remove)));
         list.append(row);
     }
     for (const ban of getSettings().globalStructureBans) {
@@ -1969,7 +1977,7 @@ function renderGlobalBans() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(info, createBanActions(remove));
+        row.append(appendBanActions(info, createBanActions(remove)));
         list.append(row);
     }
     if (!bans.length && !getSettings().globalStructureBans.length) {
@@ -2054,7 +2062,7 @@ function renderBanManager() {
             invalidateAnalysis();
             updateUi();
         });
-        row.append(info, createBanActions(reset, promote, remove));
+        row.append(appendBanActions(info, createBanActions(reset, promote, remove)));
         list.append(row);
     }
     if (!bans.length) {

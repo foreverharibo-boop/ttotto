@@ -96,24 +96,26 @@
 #ttotto-settings .ttotto-tab {
   width: 100%;
   margin: 0;
-  border: 1px solid color-mix(in srgb, currentColor 18%, transparent) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
   box-shadow: none !important;
   filter: none !important;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color 120ms ease;
 }
 
 #ttotto-settings .ttotto-tab.is-active {
-  border-color: var(--SmartThemeQuoteColor, currentColor) !important;
-  background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 14%, transparent) !important;
-  box-shadow: inset 0 0 0 1px var(--SmartThemeQuoteColor, currentColor) !important;
+  border-color: rgba(150, 150, 150, 0.48) !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 #ttotto-settings .ttotto-tab:not(.is-active) {
-  border-color: color-mix(in srgb, currentColor 18%, transparent) !important;
+  border-color: transparent !important;
   background: transparent !important;
 }
 
-#ttotto-settings .ttotto-tab:focus:not(:focus-visible) {
+#ttotto-settings .ttotto-tab:focus,
+#ttotto-settings .ttotto-tab:focus-visible {
   outline: none !important;
 }
 
@@ -347,7 +349,7 @@
 
 #ttotto-settings .ttotto-ban-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 9px;
@@ -377,9 +379,19 @@
 }
 
 #ttotto-settings .ttotto-ban-meta {
+  min-width: 0;
   opacity: 0.66;
   font-size: 0.78em;
   line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-ban-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  min-width: 0;
 }
 
 #ttotto-settings .ttotto-offense-badge {
@@ -426,7 +438,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 5px;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 
 #ttotto-settings .ttotto-ban-actions .menu_button {
@@ -510,12 +523,8 @@
     grid-template-columns: 1fr;
   }
 
-  #ttotto-settings .ttotto-ban-item {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  #ttotto-settings .ttotto-ban-actions {
-    justify-content: flex-start;
+  #ttotto-settings .ttotto-ban-meta-row {
+    gap: 5px;
   }
 }
 
