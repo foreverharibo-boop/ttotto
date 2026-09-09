@@ -60,7 +60,7 @@ test('금지 추가 입력칸과 버튼은 같은 바깥 크기이고 영구 해
     assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
 });
 
-test('구조 금지 AI 설명은 선택칸 아래 전체 너비의 한 줄이다', async () => {
+test('드래그 보조 AI 설명은 선택칸 아래 전체 너비의 한 줄이다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     assert.match(css, /#ttotto-settings \.ttotto-field > small \{[\s\S]*?grid-column:\s*1\s*\/\s*-1[\s\S]*?white-space:\s*nowrap/);
@@ -75,13 +75,4 @@ test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제�
     assert.ok(normalIndex >= 0 && strongIndex > normalIndex && profileIndex > strongIndex);
     assert.match(html, /에코 방지 강화 모드/);
     assert.match(html, /최대 8개/);
-});
-
-test('드래그 금지 메뉴와 전역 선택 감시 리스너는 완전히 제거됐다', async () => {
-    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
-    assert.doesNotMatch(js, /ttotto-drag-ban/);
-    assert.doesNotMatch(js, /selectionchange/);
-    assert.doesNotMatch(js, /getSelection\s*\(/);
-    assert.doesNotMatch(js, /addEventListener\(['"](?:mouseup|touchend)['"]/);
-    assert.match(js, /function resolveStructureAiProfile/);
 });

@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.17';
+const EXTENSION_VERSION = '1.8.16';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -35,8 +35,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
-    dragAiProfile: '', // 구조 금지 AI가 사용할 연결 프로필. 구버전 설정 호환을 위해 저장 키는 유지한다.
-    dragStructureAi: true, // 자연어 구조 설명을 AI로 정밀 지시문으로 변환할지 여부. 구버전 설정 호환을 위해 저장 키는 유지한다.
+    dragAiProfile: '', // 드래그 금지 보조 AI가 사용할 연결 프로필. '' = 현재 연결 사용, 그 외 = 연결 프로필 id (실제 온/오프는 dragStructureAi가 결정)
+    dragStructureAi: true, // 드래그 금지 보조 AI(구조 지시문 생성 + 번역문 원문 역추적) 사용 여부 — 끄면 두 기능 모두 즉시 수동/로컬 폴백으로 전환
     smartMaxTokens: 20000, // 상한일 뿐 실제 소모와 무관 — 추론 토큰 포함해도 넉넉하고, 웬만한 백엔드 상한보다 낮아 거부되지 않음
     maxInjectedPatterns: 6,
     sourceMode: 'original',
@@ -2213,8 +2213,8 @@ function populateProfiles() {
     }
     select.value = currentValue;
 
-    // 구조 금지 AI 연결 선택 — 순수 연결 프로필 목록만 보여준다.
-    // 실제 사용 여부는 이 드롭다운이 아니라 '구조 금지 AI 분석' 체크박스가 결정한다.
+    // 드래그 금지 보조 AI 연결 선택 — 순수 연결 프로필 목록만 보여준다.
+    // 실제 사용 여부(온/오프)는 이 드롭다운이 아니라 '구조 금지 AI 분석' 체크박스(dragStructureAi)가 결정한다.
     const dragSelect = document.getElementById('ttotto-drag-ai-profile');
     if (dragSelect) {
         const dragValue = String(settings.dragAiProfile ?? '');
@@ -2335,7 +2335,7 @@ function bindUi() {
         }
         let payload;
         const structureSettings = getSettings();
-        if (!structureSettings.dragStructureAi || resolveStructureAiProfile(structureSettings) === null) {
+        if (!structureSettings.dragStructureAi || resolveDragAiProfile(structureSettings) === null) {
             payload = fallbackStructureBan('description', description);
         } else {
             try {
@@ -2380,7 +2380,7 @@ function bindUi() {
         }
         let payload;
         const structureSettings = getSettings();
-        if (!structureSettings.dragStructureAi || resolveStructureAiProfile(structureSettings) === null) {
+        if (!structureSettings.dragStructureAi || resolveDragAiProfile(structureSettings) === null) {
             payload = fallbackStructureBan('description', description);
         } else {
             try {
@@ -2500,12 +2500,224 @@ function bindUi() {
     });
 }
 
-// 자연어 구조 금지 AI 연결 결정. 구버전 저장 키는 호환을 위해 그대로 사용한다.
-const STRUCTURE_AI_MAX_TOKENS = 20000;
+// ───────────────────────── 드래그 금지 ─────────────────────────
+// AI 메시지에서 표현을 드래그하면 🌀 버튼이 떠서 탭 한 번으로 영구 금지어 등록.
+//  - 한입한출: 드래그 텍스트가 곧 원문 → 즉시 등록
+//  - 번역 채팅 (표시문 드래그): 보조 AI로 원문 표현 역추적 → 확인 후 등록 (AI 없으면 수동 입력 폴백)
+//  - 번역 채팅 (수정 모드에서 드래그): 편집창은 원문이므로 즉시 등록
 
-function resolveStructureAiProfile(settings) {
+let dragBanButton = null;
+let dragBanContext = null;
+let dragBanHandlersAttached = false;
+let dragBanSelectionTimer = null;
+// 추론형 모델이 생각 토큰을 쓰다 JSON이 잘리지 않도록 넉넉하게 — Gemini 허용 최대치 (상한일 뿐 실제 소모와 무관)
+const DRAG_AI_MAX_TOKENS = 20000;
+
+const DRAG_BAN_MENU_CSS = [
+    'position:fixed !important', 'z-index:99999 !important', 'transform:none !important',
+    'display:flex', 'gap:4px', 'padding:4px', 'border-radius:999px',
+    'border:1px solid rgba(255,255,255,0.25)', 'background-color:#2b2b34',
+    'box-shadow:0 4px 14px rgba(0,0,0,0.45)', 'user-select:none', '-webkit-user-select:none',
+].join('; ');
+const DRAG_BAN_CHIP_CSS = [
+    'padding:5px 10px', 'border-radius:999px', 'border:none', 'background:transparent',
+    'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer', 'white-space:nowrap',
+    'touch-action:manipulation',
+].join('; ');
+
+function getDragSelectionInfo() {
+    // 1) 메시지 수정 모드의 textarea — 편집창 내용은 원문.
+    //    단, 채팅 입력창 같은 다른 textarea가 포커스를 물고 있어도 본문 selection 확인은 계속한다.
+    const active = document.activeElement;
+    if (active && active.tagName === 'TEXTAREA') {
+        const mesBlock = active.closest('.mes');
+        const start = active.selectionStart ?? 0;
+        const end = active.selectionEnd ?? 0;
+        if (mesBlock && end > start) {
+            return { rawTerm: active.value.slice(start, end), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: true };
+        }
+    }
+    // 2) 일반 메시지 본문 selection
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed) return null;
+    const anchor = selection.anchorNode instanceof Element ? selection.anchorNode : selection.anchorNode?.parentElement;
+    const mesText = anchor?.closest?.('.mes_text');
+    const mesBlock = anchor?.closest?.('.mes');
+    if (!mesText || !mesBlock) return null;
+    if (mesBlock.getAttribute('is_user') === 'true') return null;
+    return { rawTerm: String(selection), mesIndex: Number(mesBlock.getAttribute('mesid')), fromEdit: false };
+}
+
+// 선택이 "문장"처럼 보이는지 — 4단어 이상이거나, 문장부호로 끝나거나, 절 연결이 있으면 문장으로 본다
+function looksLikeSentence(text) {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) return false;
+    if (trimmed.split(/\s+/).length >= 4) return true;
+    if (/[.!?…~。！？]["')\]』」]?$/.test(trimmed)) return true;
+    if (/[,;:—–]|지만\s|면서\s|하며\s|not\s+\w+\s+but\s/i.test(trimmed)) return true;
+    return false;
+}
+
+// 화면 selection의 사각형 (textarea 선택은 사각형을 못 구하므로 null)
+function dragSelectionRect() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const rect = selection.getRangeAt(selection.rangeCount - 1).getBoundingClientRect();
+    return rect && (rect.width || rect.height) ? rect : null;
+}
+
+function hideDragBanButton() {
+    if (dragBanButton) dragBanButton.style.display = 'none';
+    dragBanContext = null;
+}
+
+function ensureDragBanButton() {
+    if (dragBanButton) return dragBanButton;
+    dragBanButton = document.createElement('div');
+    dragBanButton.id = 'ttotto-drag-ban';
+    const termChip = document.createElement('button');
+    termChip.id = 'ttotto-drag-ban-term';
+    termChip.type = 'button';
+    termChip.textContent = '🌀 표현';
+    termChip.title = '이 표현을 영구 금지어로';
+    const structureChip = document.createElement('button');
+    structureChip.id = 'ttotto-drag-ban-structure';
+    structureChip.type = 'button';
+    structureChip.textContent = '🧱 구조';
+    structureChip.title = '이 문장 같은 서술 구조를 금지';
+    dragBanButton.append(termChip, structureChip);
+    document.body.append(dragBanButton);
+    // click 전에 selection이 사라지지 않도록 mousedown/touchstart를 잡아둔다
+    for (const type of ['mousedown', 'touchstart']) {
+        dragBanButton.addEventListener(type, (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        }, { passive: false });
+    }
+    // 모바일: touchstart를 preventDefault하면 브라우저가 click을 합성하지 않으므로
+    // 칩 동작은 touchend에서 직접 처리한다 (touchend preventDefault → click 중복 발생 없음)
+    const activate = (handler) => (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void handler();
+    };
+    for (const type of ['click', 'touchend']) {
+        termChip.addEventListener(type, activate(handleDragBanClick), { passive: false });
+        structureChip.addEventListener(type, activate(handleDragStructureClick), { passive: false });
+    }
+    return dragBanButton;
+}
+
+function maybeShowDragBanButton(clientX, clientY) {
+    if (!runtimeActive || !getSettings().enabled) return hideDragBanButton();
+    const info = getDragSelectionInfo();
+    const rawTerm = String(info?.rawTerm ?? '').trim().slice(0, 400);
+    if (!info || !rawTerm || !Number.isInteger(info.mesIndex) || info.mesIndex < 0) return hideDragBanButton();
+    const term = cleanBanTerm(rawTerm);
+    dragBanContext = { ...info, rawTerm, term };
+    const menu = ensureDragBanButton();
+    // 선택이 단어/짧은 구면 🌀 표현만, 문장이면 🧱 구조를 앞세워 둘 다, 80자 초과면 구조만
+    const sentence = looksLikeSentence(rawTerm);
+    const termChip = menu.querySelector('#ttotto-drag-ban-term');
+    const structureChip = menu.querySelector('#ttotto-drag-ban-structure');
+    termChip.style.cssText = `${DRAG_BAN_CHIP_CSS}; ${term ? '' : 'display:none;'}`;
+    structureChip.style.cssText = `${DRAG_BAN_CHIP_CSS}; ${!term || sentence ? 'order:-1;' : 'display:none;'}`;
+
+    // 위치: 드래그한 선택 영역의 바로 오른쪽 (세로는 선택 중앙에 맞춤)
+    const rect = info.fromEdit ? null : dragSelectionRect();
+    const menuWidth = term ? 150 : 84;
+    let left;
+    let top;
+    if (rect) {
+        left = rect.right + 8;
+        top = rect.top + rect.height / 2 - 16;
+        if (left > window.innerWidth - menuWidth - 8) {
+            // 오른쪽 공간이 없으면 선택 영역 아래, 오른쪽 정렬로
+            // (번역기 재번역 버튼 등 왼쪽에 붙는 플로팅 버튼과의 충돌 회피)
+            left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
+            top = rect.bottom + 10;
+        }
+    } else if (Number.isFinite(Number(clientX)) && Number.isFinite(Number(clientY))) {
+        // 수정 모드(textarea) + 포인터 좌표가 있으면 포인터 오른쪽에
+        left = Math.min(Number(clientX) + 12, window.innerWidth - menuWidth - 8);
+        top = Number(clientY) - 16;
+    } else {
+        // 좌표 없이 selectionchange로 호출된 경우(모바일): 편집창의 오른쪽 위 모서리에
+        const activeRect = document.activeElement?.getBoundingClientRect?.();
+        left = activeRect ? Math.max(8, activeRect.right - menuWidth - 8) : window.innerWidth - menuWidth - 16;
+        top = activeRect ? Math.max(8, activeRect.top - 44) : 80;
+    }
+    top = Math.max(8, Math.min(top, window.innerHeight - 48));
+    // 그 자리에 다른 플로팅 버튼(번역기 재번역 버튼 등)이 이미 있으면 아래로 비켜난다
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const probe = document.elementFromPoint(
+            Math.max(4, Math.min(left + menuWidth / 2, window.innerWidth - 4)),
+            Math.max(4, Math.min(top + 16, window.innerHeight - 4)),
+        );
+        if (!probe || dragBanButton?.contains(probe)) break;
+        const floating = probe.closest('button, [role="button"]');
+        if (!floating || dragBanButton?.contains(floating)) break;
+        top += 48;
+        if (top > window.innerHeight - 48) {
+            top = window.innerHeight - 48;
+            break;
+        }
+    }
+    menu.style.cssText = `left:${left}px; top:${top}px; ${DRAG_BAN_MENU_CSS}`;
+}
+
+function onDragBanPointerUp(event) {
+    if (!runtimeActive) return;
+    if (dragBanButton && (event.target === dragBanButton || dragBanButton.contains(event.target))) return;
+    const x = event.clientX ?? event.changedTouches?.[0]?.clientX;
+    const y = event.clientY ?? event.changedTouches?.[0]?.clientY;
+    // selection이 확정된 뒤에 읽도록 한 박자 늦춘다 (모바일 롱프레스 선택 포함)
+    setTimeout(() => maybeShowDragBanButton(x, y), 60);
+}
+
+// 모바일 핵심 경로: 롱프레스 선택은 touchend 시점에 selection이 확정 안 된 경우가 많아서,
+// selectionchange 자체를 (디바운스해서) 표시 트리거로 쓴다. 위치는 선택 영역 사각형 기준이라 좌표가 필요 없다.
+function onDragBanSelectionChange() {
+    if (!runtimeActive) return;
+    clearTimeout(dragBanSelectionTimer);
+    dragBanSelectionTimer = setTimeout(() => {
+        const info = getDragSelectionInfo();
+        if (!info || !String(info.rawTerm ?? '').trim()) {
+            hideDragBanButton();
+            return;
+        }
+        maybeShowDragBanButton();
+    }, 250);
+}
+
+// 드래그 보조 AI 연결 결정: 구조 금지 AI 분석(dragStructureAi)이 꺼져 있으면 항상 null(사용 안 함).
+// 켜져 있으면 '드래그 금지 보조 AI' 드롭다운에서 고른 연결 프로필을 그대로 사용한다 ('' = 현재 연결).
+function resolveDragAiProfile(settings) {
     if (!settings.dragStructureAi) return null;
     return String(settings.dragAiProfile ?? '').trim();
+}
+
+async function requestBanTrace(originalText, translatedSelection) {
+    const context = getContext();
+    const settings = getSettings();
+    const prompt = [
+        {
+            role: 'system',
+            content: 'You match a phrase selected from a TRANSLATED text back to the ORIGINAL text. Return ONLY JSON, no markdown: {"match":"exact substring copied verbatim from the original text"}. The match must be 1-80 characters and appear character-for-character in the original. Pick the expression that corresponds to the selected phrase. If nothing corresponds, return {"match":""}.',
+        },
+        { role: 'user', content: `ORIGINAL:\n${originalText.slice(0, 6000)}\n\nSELECTED (translated):\n${translatedSelection}` },
+    ];
+    const profileId = resolveDragAiProfile(settings);
+    if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
+    const raw = await sendAiRequest(profileId, prompt, DRAG_AI_MAX_TOKENS);
+    const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start < 0 || end <= start) {
+        console.warn(`${LOG_PREFIX} 역추적 원시 응답:`, String(raw ?? '(빈 응답)').slice(0, 500));
+        throw new Error(clean ? '역추적 응답에 JSON이 없어요.' : '역추적 응답이 비어 있어요 (연결·프로필을 확인해 주세요).');
+    }
+    return cleanBanTerm(JSON.parse(clean.slice(start, end + 1))?.match ?? '');
 }
 
 // 서술 구조 금지 — type 'pattern' 금지로 저장되어 기존 주입 파이프라인을 그대로 탄다
@@ -2544,9 +2756,9 @@ async function requestStructureJson(mode, text) {
         { role: 'system', content: system },
         { role: 'user', content: String(text).slice(0, 1200) },
     ];
-    const profileId = resolveStructureAiProfile(settings);
-    if (profileId === null) throw new Error('구조 금지 AI 분석이 꺼져 있어요.');
-    const raw = await sendAiRequest(profileId, prompt, STRUCTURE_AI_MAX_TOKENS);
+    const profileId = resolveDragAiProfile(settings);
+    if (profileId === null) throw new Error('드래그 보조 AI가 꺼져 있어요.');
+    const raw = await sendAiRequest(profileId, prompt, DRAG_AI_MAX_TOKENS);
     const clean = String(raw ?? '').replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
     const start = clean.indexOf('{');
     const end = clean.lastIndexOf('}');
@@ -2559,6 +2771,43 @@ async function requestStructureJson(mode, text) {
     const instruction = String(parsed?.instruction ?? '').trim().slice(0, 300);
     if (!instruction) throw new Error('구조 지시문이 비어 있어요.');
     return { label: label || '구조 금지', instruction };
+}
+
+// ── 무호출 자체 구조 분석 ──
+// AI 없이 정규식 규칙으로 문장의 구조 특징을 찾아낸다. 감지된 특징은 팝업으로 보여주고,
+// 지시문에는 특징을 영어로 명시해 예시-단독 방식보다 명중률을 높인다.
+const LOCAL_STRUCTURE_RULES = [
+    { ko: '대조 구문 (not A but B / ~이 아니라)', en: 'contrast framing that negates one thing to assert another (not X but Y)', re: /not\s+(?:a|an|the\s+)?\w[^.,;]{0,50}?\bbut\b|(?:이|가)\s*아니라|라기보다/i },
+    { ko: '연결어미로 절을 길게 잇기 (~하며/~면서)', en: 'chaining multiple clauses with sequential connectives in a single sentence', re: /[가-힣](?:며|면서|고서|ㄴ\s*채)\s[^.!?]*?[가-힣](?:며|면서|고서|ㄴ\s*채)\s/ },
+    { ko: '평서형 ~다 종결', en: 'a flat declarative -da sentence ending', re: /[가-힣]다[.!?…"'」]*\s*$/ },
+    { ko: '세 요소 나란히 나열 (triplet)', en: 'listing exactly three parallel items in a row', re: /[^,，]{2,30}[,，]\s*[^,，]{2,30}[,，]\s*(?:and\s+|그리고\s+|그\s*리고\s+)?[^,，]{2,30}/ },
+    { ko: '분사구·부사절로 문장 시작', en: 'opening the sentence with a participial or adverbial phrase', re: /^\s*(?:[A-Z][a-z]+ing\b|[가-힣]{1,8}(?:하며|하듯|한\s*채),)/ },
+    { ko: '직유 비유 (~처럼 / like / as if)', en: 'a simile comparison (like / as if / ~cheoreom)', re: /처럼|듯이|듯한|like\s+an?\s|as\s+if\s/i },
+    { ko: '대시(—) 삽입', en: 'an em-dash interruption or appositive', re: /—|――|--/ },
+    { ko: '말줄임(…) 여운', en: 'a trailing ellipsis for lingering effect', re: /…|\.\.\./ },
+    { ko: '의문형 종결', en: 'ending on a (rhetorical) question', re: /\?["'”」]?\s*$/ },
+    { ko: '대사 뒤 짧은 지문 붙이기', en: 'a quoted line immediately followed by a short action beat', re: /["“][^"”]{2,80}["”][^"”]{1,45}[.!?…]?\s*$/ },
+];
+
+function analyzeStructureLocally(text) {
+    const source = String(text ?? '').trim();
+    const features = LOCAL_STRUCTURE_RULES.filter((rule) => rule.re.test(source));
+    // 짧은 단문 연타 (규칙표 밖의 통계형 특징)
+    const sentences = source.split(/(?<=[.!?…])\s+/).filter((part) => part.trim().length > 1);
+    if (sentences.length >= 3 && sentences.every((part) => part.length <= 34)) {
+        features.push({ ko: '짧은 단문 연타', en: 'a burst of short staccato sentences' });
+    }
+    const excerpt = source.slice(0, 160);
+    const clauses = features.map((feature) => feature.en);
+    const instruction = (clauses.length
+        ? `Avoid reusing this sentence construction: ${clauses.join('; ')}. Do not write structurally parallel variants of: "${excerpt}".`
+        : `Avoid reusing the narrative structure exemplified by: "${excerpt}". Do not produce structurally parallel rewrites of it.`)
+        + ' Vary sentence construction, rhythm, and the ordering of beats; ban only the construction, never content or characterization.';
+    return {
+        features: features.map((feature) => feature.ko),
+        label: features.length ? `구조 금지 · ${features[0].ko}` : `구조 금지 · ${excerpt.slice(0, 24)}…`,
+        instruction: instruction.slice(0, 500),
+    };
 }
 
 // AI 없이도 동작하는 구조 금지 폴백
@@ -2585,6 +2834,132 @@ function registerStructureBan(characterUuid, payload) {
     invalidateAnalysis();
     updateUi();
     toastr.success(`서술 구조 금지로 저장했어요: ${payload.label}`, '🌀또또');
+}
+
+async function handleDragStructureClick() {
+    const ctx = dragBanContext;
+    hideDragBanButton();
+    if (!ctx) return;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const message = chat[ctx.mesIndex];
+    if (!message || message.is_user || message.is_system) {
+        toastr.info('AI 메시지에서만 등록할 수 있어요.', '🌀또또');
+        return;
+    }
+    const identity = resolveCharacterIdentity(message);
+    const uuid = String(identity?.uuid ?? '');
+    if (!uuid) {
+        toastr.info('이 메시지의 캐릭터를 식별하지 못했어요.', '🌀또또');
+        return;
+    }
+    const example = ctx.rawTerm;
+    // AI 분석을 껐거나(설정) 보조 AI 자체가 꺼져 있으면: 자체 규칙 분석(무호출) → 확인 팝업 → 등록
+    const settings = getSettings();
+    if (!settings.dragStructureAi || resolveDragAiProfile(settings) === null) {
+        const local = analyzeStructureLocally(example);
+        const message = local.features.length
+            ? `자체 분석(무호출)으로 이런 구조 특징을 찾았어요:\n\n${local.features.map((feature) => `• ${feature}`).join('\n')}\n\n이 구조를 금지할까요?`
+            : `뚜렷한 구조 특징을 못 찾았어요. 이 문장을 예시로 삼는 기본형으로 등록할까요?\n\n"${example.slice(0, 120)}"`;
+        const ok = await confirmAction('🌀또또 · 구조 금지 (자체 분석)', message);
+        if (ok) registerStructureBan(uuid, { label: local.label, instruction: local.instruction, example });
+        return;
+    }
+    // 구조 분석은 번역문이어도 무방 — AI가 구조를 언어 중립적인 영어 지시로 변환한다
+    try {
+        toastr.info('이 문장의 서술 구조를 분석하는 중…', '🌀또또');
+        const analyzed = await requestStructureJson('example', example);
+        const ok = await confirmAction('🌀또또 · 구조 금지 확인', `이 구조를 금지할까요?\n\n[${analyzed.label}]\n${analyzed.instruction}`);
+        if (ok) registerStructureBan(uuid, { ...analyzed, example });
+    } catch (error) {
+        console.warn(`${LOG_PREFIX} 구조 분석 실패 — 폴백 등록`, error);
+        toastr.warning(`구조 분석 실패: ${error?.message ?? error}`, '🌀또또');
+        const fallback = fallbackStructureBan('example', example);
+        const ok = await confirmAction('🌀또또 · 구조 금지 (기본형)', `보조 AI 분석 없이 예시 기반으로 등록할까요?\n\n"${example.slice(0, 120)}"`);
+        if (ok) registerStructureBan(uuid, { ...fallback, example });
+    }
+}
+
+function registerDragBan(characterUuid, rawTerm) {
+    const result = addManualBan(characterUuid, rawTerm);
+    if (!result.ok) {
+        toastr.info(result.reason, '🌀또또');
+        return;
+    }
+    invalidateAnalysis();
+    updateUi();
+    toastr.success(`영구 금지어로 저장했어요: ${cleanBanTerm(rawTerm)}`, '🌀또또');
+}
+
+async function handleDragBanClick() {
+    const ctx = dragBanContext;
+    hideDragBanButton();
+    if (!ctx) return;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const message = chat[ctx.mesIndex];
+    if (!message || message.is_user || message.is_system) {
+        toastr.info('AI 메시지에서만 등록할 수 있어요.', '🌀또또');
+        return;
+    }
+    const identity = resolveCharacterIdentity(message);
+    const uuid = String(identity?.uuid ?? '');
+    if (!uuid) {
+        toastr.info('이 메시지의 캐릭터를 식별하지 못했어요.', '🌀또또');
+        return;
+    }
+    const original = messageText(message).normalize('NFKC');
+    const term = ctx.term;
+    // 수정 모드 드래그이거나 원문에 그대로 있으면(한입한출) 즉시 등록
+    if (ctx.fromEdit || original.toLocaleLowerCase().includes(term.toLocaleLowerCase())) {
+        registerDragBan(uuid, term);
+        return;
+    }
+    // 번역문 드래그 — '구조 금지 AI 분석'이 꺼져 있으면 API 호출 없이 바로 수동 입력 폴백
+    const settings = getSettings();
+    if (resolveDragAiProfile(settings) === null) {
+        const manual = window.prompt(
+            `원문 표현을 직접 입력해 주세요 (보조 AI가 꺼져 있어요).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
+            '',
+        );
+        if (manual) registerDragBan(uuid, manual);
+        return;
+    }
+    // 보조 AI 역추적 → 확인 → 등록, 실패 시 수동 입력 폴백
+    toastr.info('번역문이네요 — 원문에서 해당 표현을 찾는 중…', '🌀또또');
+    try {
+        const match = await requestBanTrace(original, term);
+        if (match && original.toLocaleLowerCase().includes(match.toLocaleLowerCase())) {
+            const ok = await confirmAction('🌀또또 · 원문 확인', `원문에서 이 표현을 금지할까요?\n\n"${match}"`);
+            if (ok) registerDragBan(uuid, match);
+            return;
+        }
+        throw new Error('원문에서 대응 표현을 찾지 못했어요.');
+    } catch (error) {
+        console.warn(`${LOG_PREFIX} 원문 역추적 실패 — 수동 입력 폴백`, error);
+        toastr.warning(`원문 역추적 실패: ${error?.message ?? error}`, '🌀또또');
+        const manual = window.prompt(
+            `원문 표현을 직접 입력해 주세요 (역추적 실패).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
+            '',
+        );
+        if (manual) registerDragBan(uuid, manual);
+    }
+}
+
+function attachDragBanHandlers() {
+    if (dragBanHandlersAttached || typeof document === 'undefined') return;
+    document.addEventListener('mouseup', onDragBanPointerUp);
+    document.addEventListener('touchend', onDragBanPointerUp);
+    document.addEventListener('selectionchange', onDragBanSelectionChange);
+    dragBanHandlersAttached = true;
+}
+
+function detachDragBanHandlers() {
+    if (!dragBanHandlersAttached || typeof document === 'undefined') return;
+    document.removeEventListener('mouseup', onDragBanPointerUp);
+    document.removeEventListener('touchend', onDragBanPointerUp);
+    document.removeEventListener('selectionchange', onDragBanSelectionChange);
+    dragBanHandlersAttached = false;
+    clearTimeout(dragBanSelectionTimer);
+    hideDragBanButton();
 }
 
 // ───────────────────────── 팝업 (완드 메뉴 빠른 접근) ─────────────────────────
@@ -2713,6 +3088,7 @@ async function initializeUi() {
     if (document.getElementById('ttotto-settings')) {
         uiReady = true;
         ttottoAddWandButton();
+        attachDragBanHandlers();
         return;
     }
     const context = getContext();
@@ -2724,6 +3100,7 @@ async function initializeUi() {
     bindUi();
     populateProfiles();
     ttottoAddWandButton();
+    attachDragBanHandlers();
     const settings = getSettings();
     const state = settings.enabled ? getChatState() : getChatState(false);
     updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
@@ -2841,6 +3218,7 @@ export function onEnable() {
     registerEvents();
     if (uiReady) {
         ttottoAddWandButton();
+        attachDragBanHandlers();
     }
     scheduleAnalysis({ smart: false, delay: 50 });
 }
@@ -2858,6 +3236,7 @@ export function onDisable() {
     smartAbortController?.abort();
     ttottoClosePopup();
     ttottoRemoveWandButton();
+    detachDragBanHandlers();
     unregisterEvents();
     clearInjectedPrompt();
 }

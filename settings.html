@@ -113,7 +113,7 @@
         </label>
 
         <label class="ttotto-field" for="ttotto-drag-ai-profile">
-          <span>구조 금지 AI 연결 프로필</span>
+          <span>드래그 금지 보조 AI 연결 프로필</span>
           <select id="ttotto-drag-ai-profile" class="text_pole"></select>
           <small>구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요.</small>
         </label>
@@ -121,7 +121,7 @@
         <label class="ttotto-setting-row" for="ttotto-structure-ai">
           <span>
             <strong>구조 금지 AI 분석</strong>
-            <small>켜면 위에서 고른 연결로 자연어 구조 설명을 정밀한 금지 지시문으로 변환해요 (호출 발생). 끄면 API 호출 없이 입력한 설명을 그대로 활용해요.</small>
+            <small>켜면 위에서 고른 연결로 구조 지시문 생성 + 번역문 드래그 시 원문 역추적을 API로 처리해요 (호출 발생). 끄면 두 기능 모두 API 호출 없이 즉시 자체 규칙 분석/수동 입력 폴백으로 동작해요.</small>
           </span>
           <input id="ttotto-structure-ai" type="checkbox">
         </label>
