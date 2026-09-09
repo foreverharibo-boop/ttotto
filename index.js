@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.10';
+const EXTENSION_VERSION = '1.8.11';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1702,8 +1702,14 @@ function renderPatterns(patterns) {
         example.className = 'ttotto-pattern-example';
         example.textContent = pattern.example ? `“${pattern.example}”` : pattern.instruction;
         title.append(name, example);
-        const badge = makeBadge(pattern.scope === 'dialogue' ? '대사' : '서술');
-        head.append(title, badge);
+        const badgeText = pattern.source === 'pinned'
+            ? (pattern.kind === 'permanent-term' ? '금지어' : '구조')
+            : (pattern.scope === 'dialogue' ? '대사' : '서술');
+        const badge = makeBadge(badgeText);
+        const side = document.createElement('div');
+        side.className = 'ttotto-pattern-side';
+        side.append(badge);
+        head.append(title, side);
 
         const meta = document.createElement('div');
         meta.className = 'ttotto-pattern-meta';
@@ -1747,14 +1753,20 @@ function renderPatterns(patterns) {
         if (pattern.source === 'pinned') {
             const unpin = document.createElement('button');
             unpin.type = 'button';
-            unpin.className = 'menu_button';
+            unpin.className = 'menu_button ttotto-pattern-unpin';
             unpin.textContent = '영구 금지 해제';
             unpin.addEventListener('click', () => {
-                removePermanentBan(pattern.characterUuid, pattern.banId);
+                if (pattern.characterUuid) {
+                    removePermanentBan(pattern.characterUuid, pattern.banId);
+                } else if (pattern.kind === 'permanent-term') {
+                    removeGlobalBan(pattern.example);
+                } else {
+                    removeGlobalStructureBan(pattern.instruction);
+                }
                 invalidateAnalysis();
                 updateUi();
             });
-            actions.append(unpin);
+            side.append(unpin);
         } else {
             const pin = document.createElement('button');
             pin.type = 'button';
@@ -1779,7 +1791,7 @@ function renderPatterns(patterns) {
 
         article.append(head, meta);
         if (evidence) article.append(evidence);
-        article.append(actions);
+        if (actions.childElementCount) article.append(actions);
         list.append(article);
     }
 

@@ -42,3 +42,16 @@ test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async ()
     assert.match(css, /#ttotto-settings \.ttotto-tab:not\(\.is-active\) \{[\s\S]*?box-shadow:\s*none|#ttotto-settings \.ttotto-tab \{[\s\S]*?box-shadow:\s*none/);
     assert.match(js, /button\.classList\.toggle\('is-active', active\)/);
 });
+
+test('금지 추가 입력칸과 버튼은 같은 너비이고 영구 해제는 배지 아래의 작은 버튼이다', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose \{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(120px,\s*1fr\)\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose-three \{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(120px,\s*1fr\)\)/);
+    assert.match(await readFile(new URL('../settings.html', import.meta.url), 'utf8'), /class="ttotto-ban-compose ttotto-ban-compose-three"/);
+    assert.match(css, /#ttotto-settings \.ttotto-pattern-side \{[\s\S]*?flex-direction:\s*column[\s\S]*?align-items:\s*flex-end/);
+    assert.match(css, /#ttotto-settings \.ttotto-pattern-unpin \{[\s\S]*?font-size:\s*0\.72em/);
+    assert.match(js, /pattern\.kind === 'permanent-term' \? '금지어' : '구조'/);
+    assert.match(js, /side\.append\(unpin\)/);
+    assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
+});
