@@ -89,6 +89,22 @@ test('태그 전체 제외를 끄면 알 수 없는 태그 안의 실제 본문�
     assert.match(parts.narration.join(' '), /actual story inside this wrapper/);
 });
 
+test('생각 태그는 태그 전체 제외 설정과 무관하게 항상 제거한다', () => {
+    const text = `<thinking>Drafting the response: repeat this scaffold.</thinking>
+<analysis>We need to answer the user.</analysis>
+<reflection>Internal notes only.</reflection>
+<scratchpad>Hidden outline.</scratchpad>
+<internal_monologue>Private chain of thought.</internal_monologue>
+He opened the window and let the rain in.`;
+    const parts = splitDialogueAndNarration(text, { excludeAllTaggedBlocks: false });
+    const visible = [...parts.narration, ...parts.dialogue].join('\n');
+    assert.equal(visible, 'He opened the window and let the rain in.');
+    assert.deepEqual(splitDialogueAndNarration('<think>unfinished hidden reasoning', { excludeAllTaggedBlocks: false }), {
+        dialogue: [],
+        narration: [],
+    });
+});
+
 test('닫는 태그가 없는 껍데기는 뒤의 본문까지 지우지 않는다', () => {
     const clean = stripAllPairedTagBlocks('<broken_box>Keep this prose because the block never closes.');
     assert.match(clean, /Keep this prose/);
@@ -143,6 +159,21 @@ test('서로 다른 답변의 반복 서술 습관을 감지한다', () => {
     ];
     const patterns = detectPatterns(messages.map((message) => ({ ...message, characterUuid: 'uuid-peter' })), settings, ['Peter']);
     assert.ok(patterns.some((pattern) => pattern.scope === 'narration' && /신체|반복 구절|구조/.test(pattern.label)));
+});
+
+test('태그 없이 노출된 모델 작성·사고 메타 문구는 반복 서술로 감지하지 않는다', () => {
+    const messages = [
+        { id: '1', speaker: 'Peter', characterUuid: 'uuid-peter', text: 'Drafting the response:\nHe shut the window and crossed the room.' },
+        { id: '2', speaker: 'Peter', characterUuid: 'uuid-peter', text: '**Drafting the response:**\nA glass rolled slowly across the table.' },
+        { id: '3', speaker: 'Peter', characterUuid: 'uuid-peter', text: 'Planning the reply: keep it concise\nRain struck the roof in uneven bursts.' },
+        { id: '4', speaker: 'Peter', characterUuid: 'uuid-peter', text: 'We need to answer the user carefully.\nThe hallway light flickered once.' },
+    ];
+    const patterns = detectPatterns(messages, settings, ['Peter']);
+    const visible = patterns.flatMap((pattern) => [pattern.example, ...(pattern.examples ?? []), pattern.instruction]).join('\n');
+    assert.doesNotMatch(visible, /Drafting the response|Planning the reply|answer the user/i);
+    const split = splitDialogueAndNarration(messages[0].text);
+    assert.doesNotMatch(split.narration.join('\n'), /Drafting the response/i);
+    assert.match(split.narration.join('\n'), /shut the window/i);
 });
 
 test('캐릭터 대사 반복을 서술과 별도로 감지한다', () => {

@@ -62,6 +62,14 @@ const DIALOGUE_FILLERS = new Set([
     '됐어', '그래', '진짜', '정말', '알았어', '뭐', '제발', '그러니까', '아니',
 ]);
 
+const GENERATION_META_LINE_PATTERNS = [
+    /^(?:drafting|writing|composing|crafting|preparing|formulating|planning|revising|editing)\s+(?:(?:the|a|my)\s+)?(?:response|reply|answer)\s*:.*$/i,
+    /^(?:analysis|reasoning|thought\s+process|internal\s+(?:analysis|reasoning|monologue)|assistant\s+response|final\s+answer)\s*:\s*$/i,
+    /^(?:we|i)\s+(?:need|should|must|will)\s+(?:to\s+)?(?:answer|respond|reply|craft|write)\s+(?:(?:to\s+)?the\s+)?(?:user|request|response)\b.*$/i,
+    /^let(?:'s| us)\s+(?:answer|respond|reply|craft|write|analy[sz]e)\b.*$/i,
+    /^(?:the\s+)?user\s+(?:asks?|wants?|requested?)\b.*$/i,
+];
+
 const SENSITIVITY = {
     loose: { narration: 4, dialogue: 5, phraseTokens: 5 },
     normal: { narration: 3, dialogue: 4, phraseTokens: 4 },
@@ -73,6 +81,16 @@ function clipMessage(text) {
     if (value.length <= MAX_MESSAGE_CHARS) return value;
     const half = Math.floor(MAX_MESSAGE_CHARS / 2);
     return `${value.slice(0, half)}\n…\n${value.slice(-half)}`;
+}
+
+function stripGenerationMetaLines(text) {
+    return String(text ?? '').split('\n').filter((line) => {
+        const plain = line.trim()
+            .replace(/^[#>*_`\-\s]+/, '')
+            .replace(/[*_`\s]+$/, '')
+            .trim();
+        return !GENERATION_META_LINE_PATTERNS.some((pattern) => pattern.test(plain));
+    }).join('\n');
 }
 
 function hasHtmlClass(tag, className) {
@@ -186,6 +204,10 @@ function parseExclusionList(value, kind) {
 
 export function stripNonProse(text, exclusions = {}, { clip = true } = {}) {
     let clean = String(text ?? '')
+        // Model-internal reasoning is never roleplay prose. Always remove the
+        // known thought-tag families, even when generic tag exclusion is off.
+        // An unclosed reasoning tag is treated as extending to the end.
+        .replace(/<(think(?:ing)?|thoughts?|reasoning|analysis|reflection|scratchpad|planning|internal[_-]?(?:monologue|thoughts?|reasoning))\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
         // User info panels can exist either before regex rendering or as a rendered HTML card.
         .replace(/<info[_-]?panel\b[^>]*>[\s\S]*?<\/info[_-]?panel\s*>/gi, ' ')
         .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ');
@@ -202,13 +224,12 @@ export function stripNonProse(text, exclusions = {}, { clip = true } = {}) {
     if (exclusions.excludeAllTaggedBlocks !== false) {
         clean = stripAllPairedTagBlocks(clean);
     }
+    clean = stripGenerationMetaLines(clean);
     // Analysis clips long texts for local n-gram performance; storage callers
     // can opt out to keep the full stripped prose.
     if (clip) clean = clipMessage(clean);
 
     return clean
-        .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
-        .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, ' ')
         .replace(/```[\s\S]*?```/g, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\[(?:img|image|video|audio|file):[^\]]*]/gi, ' ')
