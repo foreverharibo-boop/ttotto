@@ -188,12 +188,26 @@
 #ttotto-settings .ttotto-pattern-unpin {
   width: auto;
   min-width: 0;
-  min-height: 0;
+  min-height: 1.7em;
   margin: 0;
-  padding: 0.22em 0.52em;
-  font-size: 0.72em;
-  line-height: 1.2;
+  padding: 0 0.48em;
+  font-size: 0.82em;
+  line-height: 1;
   white-space: nowrap;
+}
+
+#ttotto-settings .ttotto-pattern-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-width: 0;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+#ttotto-settings .ttotto-pattern-detail-row .ttotto-pattern-example,
+#ttotto-settings .ttotto-pattern-detail-row .ttotto-pattern-meta {
+  margin-top: 0;
 }
 
 #ttotto-settings .ttotto-pattern-name {
@@ -364,8 +378,16 @@
 #ttotto-settings .ttotto-ban-compose .text_pole,
 #ttotto-settings .ttotto-ban-compose .menu_button,
 #ttotto-settings .ttotto-stack-field .text_pole {
-  width: 100%;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
   margin: 0;
+}
+
+#ttotto-settings .ttotto-ban-compose > .text_pole,
+#ttotto-settings .ttotto-ban-compose > .menu_button {
+  height: 32px !important;
+  min-height: 32px !important;
 }
 
 #ttotto-settings .ttotto-ban-list {

@@ -43,15 +43,19 @@ test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async ()
     assert.match(js, /button\.classList\.toggle\('is-active', active\)/);
 });
 
-test('금지 추가 입력칸과 버튼은 같은 너비이고 영구 해제는 배지 아래의 작은 버튼이다', async () => {
+test('금지 추가 입력칸과 버튼은 같은 바깥 크기이고 영구 해제는 배지 아래에서 같은 높이다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     assert.match(css, /#ttotto-settings \.ttotto-ban-compose \{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(120px,\s*1fr\)\)/);
     assert.match(css, /#ttotto-settings \.ttotto-ban-compose-three \{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(120px,\s*1fr\)\)/);
     assert.match(await readFile(new URL('../settings.html', import.meta.url), 'utf8'), /class="ttotto-ban-compose ttotto-ban-compose-three"/);
     assert.match(css, /#ttotto-settings \.ttotto-pattern-side \{[\s\S]*?flex-direction:\s*column[\s\S]*?align-items:\s*flex-end/);
-    assert.match(css, /#ttotto-settings \.ttotto-pattern-unpin \{[\s\S]*?font-size:\s*0\.72em/);
+    assert.match(css, /#ttotto-settings \.ttotto-pattern-unpin \{[\s\S]*?min-height:\s*1\.7em[\s\S]*?font-size:\s*0\.82em/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose \.text_pole,[\s\S]*?box-sizing:\s*border-box\s*!important[\s\S]*?width:\s*100%\s*!important/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose > \.text_pole,[\s\S]*?height:\s*32px\s*!important/);
+    assert.match(css, /#ttotto-settings \.ttotto-pattern-detail-row \{[\s\S]*?display:\s*flex[\s\S]*?align-items:\s*baseline/);
     assert.match(js, /pattern\.kind === 'permanent-term' \? '금지어' : '구조'/);
     assert.match(js, /side\.append\(unpin\)/);
+    assert.match(js, /detailRow\.append\(example, meta\)/);
     assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
 });

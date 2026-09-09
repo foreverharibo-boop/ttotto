@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.11';
+const EXTENSION_VERSION = '1.8.12';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1716,8 +1716,15 @@ function renderPatterns(patterns) {
         const source = pattern.source === 'pinned' ? '영구 금지' : pattern.source === 'smart' ? 'AI 정밀' : '로컬';
         const speaker = pattern.scope === 'dialogue' && pattern.speaker ? ` · ${pattern.speaker}` : '';
         meta.textContent = pattern.source === 'pinned'
-            ? `${source}${speaker} · 매 생성에 주입`
+            ? `· ${source}${speaker} · 매 생성에 주입`
             : `${pattern.count}개 답변에서 감지 · ${source}${speaker}`;
+
+        if (pattern.source === 'pinned') {
+            const detailRow = document.createElement('div');
+            detailRow.className = 'ttotto-pattern-detail-row';
+            detailRow.append(example, meta);
+            title.append(detailRow);
+        }
 
         const evidenceItems = patternEvidence(pattern);
         let evidence = null;
@@ -1789,7 +1796,8 @@ function renderPatterns(patterns) {
             actions.append(pin, allow);
         }
 
-        article.append(head, meta);
+        article.append(head);
+        if (pattern.source !== 'pinned') article.append(meta);
         if (evidence) article.append(evidence);
         if (actions.childElementCount) article.append(actions);
         list.append(article);
