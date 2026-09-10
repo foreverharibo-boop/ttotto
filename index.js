@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.16';
+const EXTENSION_VERSION = '1.8.18';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
+    dragBanMenuEnabled: true, // AI 답변 드래그 시 표현/구조 빠른 등록 메뉴 표시
     dragAiProfile: '', // 드래그 금지 보조 AI가 사용할 연결 프로필. '' = 현재 연결 사용, 그 외 = 연결 프로필 id (실제 온/오프는 dragStructureAi가 결정)
     dragStructureAi: true, // 드래그 금지 보조 AI(구조 지시문 생성 + 번역문 원문 역추적) 사용 여부 — 끄면 두 기능 모두 즉시 수동/로컬 폴백으로 전환
     smartMaxTokens: 20000, // 상한일 뿐 실제 소모와 무관 — 추론 토큰 포함해도 넉넉하고, 웬만한 백엔드 상한보다 낮아 거부되지 않음
@@ -136,6 +137,7 @@ function getSettings() {
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
+    settings.dragBanMenuEnabled = settings.dragBanMenuEnabled !== false;
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
     if (!(smartTokens >= 2000 && smartTokens <= 65536)) settings.smartMaxTokens = 20000;
@@ -2152,6 +2154,8 @@ function updateUi(analysisOverride = null) {
         strongEchoCheckbox.checked = Boolean(settings.echoPreventionStrong);
         strongEchoCheckbox.disabled = !settings.echoPreventionEnabled;
     }
+    const dragBanMenuCheckbox = document.getElementById('ttotto-drag-ban-menu-enabled');
+    if (dragBanMenuCheckbox) dragBanMenuCheckbox.checked = Boolean(settings.dragBanMenuEnabled);
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
     if (structureAiCheckbox) structureAiCheckbox.checked = Boolean(settings.dragStructureAi);
     document.getElementById('ttotto-smart-enabled').checked = settings.smartAnalysis;
@@ -2260,6 +2264,7 @@ function bindSetting(id, key, parser = (value) => value) {
         } else if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key) && settings.smartAnalysis) {
             scheduleSmartAnalysis({ force: true });
         }
+        if (key === 'dragBanMenuEnabled') syncDragBanHandlers(settings);
         invalidateAnalysis();
         if (!settings.enabled) clearInjectedPrompt();
         const state = settings.enabled ? getChatState() : getChatState(false);
@@ -2284,6 +2289,7 @@ function bindUi() {
     bindSetting('ttotto-dialogue-enabled', 'dialogueEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
+    bindSetting('ttotto-drag-ban-menu-enabled', 'dragBanMenuEnabled', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
     bindSetting('ttotto-profile', 'smartProfileId', String);
@@ -2609,7 +2615,8 @@ function ensureDragBanButton() {
 }
 
 function maybeShowDragBanButton(clientX, clientY) {
-    if (!runtimeActive || !getSettings().enabled) return hideDragBanButton();
+    const settings = getSettings();
+    if (!runtimeActive || !settings.enabled || !settings.dragBanMenuEnabled) return hideDragBanButton();
     const info = getDragSelectionInfo();
     const rawTerm = String(info?.rawTerm ?? '').trim().slice(0, 400);
     if (!info || !rawTerm || !Number.isInteger(info.mesIndex) || info.mesIndex < 0) return hideDragBanButton();
@@ -2667,7 +2674,7 @@ function maybeShowDragBanButton(clientX, clientY) {
 }
 
 function onDragBanPointerUp(event) {
-    if (!runtimeActive) return;
+    if (!runtimeActive || !getSettings().dragBanMenuEnabled) return;
     if (dragBanButton && (event.target === dragBanButton || dragBanButton.contains(event.target))) return;
     const x = event.clientX ?? event.changedTouches?.[0]?.clientX;
     const y = event.clientY ?? event.changedTouches?.[0]?.clientY;
@@ -2678,7 +2685,7 @@ function onDragBanPointerUp(event) {
 // 모바일 핵심 경로: 롱프레스 선택은 touchend 시점에 selection이 확정 안 된 경우가 많아서,
 // selectionchange 자체를 (디바운스해서) 표시 트리거로 쓴다. 위치는 선택 영역 사각형 기준이라 좌표가 필요 없다.
 function onDragBanSelectionChange() {
-    if (!runtimeActive) return;
+    if (!runtimeActive || !getSettings().dragBanMenuEnabled) return;
     clearTimeout(dragBanSelectionTimer);
     dragBanSelectionTimer = setTimeout(() => {
         const info = getDragSelectionInfo();
@@ -2946,6 +2953,7 @@ async function handleDragBanClick() {
 
 function attachDragBanHandlers() {
     if (dragBanHandlersAttached || typeof document === 'undefined') return;
+    if (!runtimeActive || !getSettings().dragBanMenuEnabled) return;
     document.addEventListener('mouseup', onDragBanPointerUp);
     document.addEventListener('touchend', onDragBanPointerUp);
     document.addEventListener('selectionchange', onDragBanSelectionChange);
@@ -2953,13 +2961,21 @@ function attachDragBanHandlers() {
 }
 
 function detachDragBanHandlers() {
-    if (!dragBanHandlersAttached || typeof document === 'undefined') return;
-    document.removeEventListener('mouseup', onDragBanPointerUp);
-    document.removeEventListener('touchend', onDragBanPointerUp);
-    document.removeEventListener('selectionchange', onDragBanSelectionChange);
-    dragBanHandlersAttached = false;
+    if (typeof document === 'undefined') return;
+    if (dragBanHandlersAttached) {
+        document.removeEventListener('mouseup', onDragBanPointerUp);
+        document.removeEventListener('touchend', onDragBanPointerUp);
+        document.removeEventListener('selectionchange', onDragBanSelectionChange);
+        dragBanHandlersAttached = false;
+    }
     clearTimeout(dragBanSelectionTimer);
+    dragBanSelectionTimer = null;
     hideDragBanButton();
+}
+
+function syncDragBanHandlers(settings = getSettings()) {
+    if (runtimeActive && settings.enabled && settings.dragBanMenuEnabled) attachDragBanHandlers();
+    else detachDragBanHandlers();
 }
 
 // ───────────────────────── 팝업 (완드 메뉴 빠른 접근) ─────────────────────────
@@ -3088,7 +3104,7 @@ async function initializeUi() {
     if (document.getElementById('ttotto-settings')) {
         uiReady = true;
         ttottoAddWandButton();
-        attachDragBanHandlers();
+        syncDragBanHandlers();
         return;
     }
     const context = getContext();
@@ -3100,7 +3116,7 @@ async function initializeUi() {
     bindUi();
     populateProfiles();
     ttottoAddWandButton();
-    attachDragBanHandlers();
+    syncDragBanHandlers();
     const settings = getSettings();
     const state = settings.enabled ? getChatState() : getChatState(false);
     updateUi(settings.enabled && state?.enabled ? analyzeCurrentChat(true) : EMPTY_ANALYSIS);
@@ -3218,7 +3234,7 @@ export function onEnable() {
     registerEvents();
     if (uiReady) {
         ttottoAddWandButton();
-        attachDragBanHandlers();
+        syncDragBanHandlers();
     }
     scheduleAnalysis({ smart: false, delay: 50 });
 }

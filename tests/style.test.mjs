@@ -76,3 +76,18 @@ test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제�
     assert.match(html, /에코 방지 강화 모드/);
     assert.match(html, /최대 8개/);
 });
+
+test('드래그 표현·구조 메뉴는 설정에서 켜고 끌 수 있다', async () => {
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    const toggleIndex = html.indexOf('id="ttotto-drag-ban-menu-enabled"');
+    const profileIndex = html.indexOf('id="ttotto-drag-ai-profile"');
+    assert.ok(toggleIndex >= 0 && profileIndex > toggleIndex);
+    assert.match(html, /드래그 금지 메뉴 표시/);
+    assert.match(html, /끄면 드래그 선택 감시도 함께 중지/);
+    assert.match(js, /dragBanMenuEnabled:\s*true/);
+    assert.match(js, /bindSetting\('ttotto-drag-ban-menu-enabled',\s*'dragBanMenuEnabled',\s*Boolean\)/);
+    assert.match(js, /if \(key === 'dragBanMenuEnabled'\) syncDragBanHandlers\(settings\)/);
+    assert.match(js, /function syncDragBanHandlers\(settings = getSettings\(\)\)[\s\S]*?settings\.dragBanMenuEnabled[\s\S]*?attachDragBanHandlers\(\)[\s\S]*?detachDragBanHandlers\(\)/);
+    assert.match(js, /function attachDragBanHandlers\(\)[\s\S]*?!getSettings\(\)\.dragBanMenuEnabled/);
+});
