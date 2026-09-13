@@ -26,6 +26,46 @@ test('금지어는 독립된 실제 표현일 때만 일치한다', async () => 
     assert.equal(module.stripBanCounterText('<thinking>청년을 피해야 한다.'), '');
 });
 
+test('전역 금지어는 설정 목록과 감지 목록이 공유하는 삭제 함수에서 실제로 제거된다', async () => {
+    let settingsSaveCount = 0;
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {
+            ttotto: {
+                globalBans: [' VISE ', 'anchor'],
+                globalBanIds: { vise: 'global-vise-id', anchor: 'global-anchor-id' },
+            },
+        },
+        chatMetadata: {
+            ttotto: {
+                enabled: true,
+                banOffenseVersion: 3,
+                banOffenses: {
+                    'global|global-vise-id': { evidence: [{ key: 'old-vise-hit' }] },
+                },
+                lastBanHits: [{ term: 'VISE', characterUuid: '', banId: 'global-vise-id' }],
+                smart: { patterns: [], messageKeys: [] },
+            },
+        },
+        chatId: 'global-delete-test', groupId: null, characterId: 0,
+        characters: [], groups: [], chat: [],
+        setExtensionPrompt() {},
+        saveSettingsDebounced() { settingsSaveCount += 1; },
+        saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?global-delete=${Date.now()}`);
+
+    assert.equal(module.removeGlobalBan('vise'), true);
+    assert.deepEqual(context.extensionSettings.ttotto.globalBans, ['anchor']);
+    assert.equal(context.extensionSettings.ttotto.globalBanIds.vise, undefined);
+    assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-vise-id'], undefined);
+    assert.deepEqual(context.chatMetadata.ttotto.lastBanHits, []);
+    assert.ok(settingsSaveCount >= 1);
+    assert.equal(module.removeGlobalBan('does-not-exist'), false);
+});
+
 test('불꽃은 숨김·태그·번역 표시문을 빼고 실제 본문을 메시지당 한 번만 센다', async () => {
     const listeners = new Map();
     const promptCalls = [];

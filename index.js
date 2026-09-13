@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.18';
+const EXTENSION_VERSION = '1.8.19';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1866,14 +1866,25 @@ function addGlobalBan(rawTerm) {
     return { ok: true };
 }
 
-function removeGlobalBan(term) {
+export function removeGlobalBan(rawTerm) {
+    const key = normalizedBanTermKey(rawTerm);
+    if (!key) return false;
+
+    // getSettings() replaces the top-level settings object on every call.
+    // Do not call globalBanIdFor() here: it calls getSettings() again and would
+    // leave us mutating a stale object, which made global bans reappear after deletion.
     const settings = getSettings();
-    const key = normalizedBanTermKey(term);
-    const banId = globalBanIdFor(term, false);
-    resetOffense(term, '', banId);
-    settings.globalBans = settings.globalBans.filter((item) => item !== term);
-    delete settings.globalBanIds[key];
+    const storedTerm = settings.globalBans.find((item) => normalizedBanTermKey(item) === key);
+    if (storedTerm === undefined) return false;
+    const banId = String(settings.globalBanIds[key] ?? '');
+    resetOffense(cleanBanTerm(storedTerm) || cleanBanTerm(rawTerm), '', banId);
+
+    // Re-acquire the active object in case another state helper replaced it.
+    const activeSettings = getSettings();
+    activeSettings.globalBans = activeSettings.globalBans.filter((item) => normalizedBanTermKey(item) !== key);
+    delete activeSettings.globalBanIds[key];
     saveSettings();
+    return true;
 }
 
 function addGlobalStructureBan(payload) {
