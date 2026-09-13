@@ -43,7 +43,7 @@ test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async ()
     assert.match(js, /button\.classList\.toggle\('is-active', active\)/);
 });
 
-test('금지 추가 입력칸과 버튼은 같은 바깥 크기이고 영구 해제는 배지 아래에서 같은 높이다', async () => {
+test('금지 추가 UI와 캐릭터별·전역 삭제 버튼을 명확히 구분한다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     assert.match(css, /#ttotto-settings \.ttotto-ban-compose \{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(120px,\s*1fr\)\)/);
@@ -57,6 +57,7 @@ test('금지 추가 입력칸과 버튼은 같은 바깥 크기이고 영구 해
     assert.match(js, /pattern\.kind === 'permanent-term' \? '금지어' : '구조'/);
     assert.match(js, /side\.append\(unpin\)/);
     assert.match(js, /detailRow\.append\(example, meta\)/);
+    assert.match(js, /unpin\.textContent = pattern\.characterUuid \? '영구 금지 해제' : '전역 금지 삭제'/);
     assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
 });
 

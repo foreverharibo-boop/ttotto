@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.19';
+const EXTENSION_VERSION = '1.8.21';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -125,7 +125,23 @@ function getSettings() {
         settings.globalBanIds[key] = newBanRegistrationId('global', key);
         globalBanIdsChanged = true;
     }
-    if (globalBanIdsChanged && typeof context.saveSettingsDebounced === 'function') {
+    let duplicateCharacterBansRemoved = false;
+    for (const [uuid, rawBans] of Object.entries(settings.characterBans)) {
+        if (!Array.isArray(rawBans)) continue;
+        const kept = [];
+        for (const ban of rawBans) {
+            const duplicatesGlobal = ban?.type === 'term'
+                && activeGlobalBanKeys.has(normalizedBanTermKey(ban.term));
+            if (!duplicatesGlobal) {
+                kept.push(ban);
+                continue;
+            }
+            duplicateCharacterBansRemoved = true;
+            resetOffense(ban.term, uuid, String(ban.id ?? ''));
+        }
+        if (kept.length !== rawBans.length) settings.characterBans[uuid] = kept;
+    }
+    if ((globalBanIdsChanged || duplicateCharacterBansRemoved) && typeof context.saveSettingsDebounced === 'function') {
         context.saveSettingsDebounced();
     }
     settings.globalStructureBans = Array.isArray(settings.globalStructureBans)
@@ -789,9 +805,13 @@ function stableLocalId(value) {
     return (hash >>> 0).toString(36);
 }
 
-function addManualBan(characterUuid, rawTerm) {
+export function addManualBan(characterUuid, rawTerm) {
     const term = cleanBanTerm(rawTerm);
     if (!term) return { ok: false, reason: '금지어는 1~80자로 입력해 주세요.' };
+    const settings = getSettings();
+    if (settings.globalBans.some((item) => normalizedBanTermKey(item) === normalizedBanTermKey(term))) {
+        return { ok: false, reason: '이미 전역 금지어예요. 모든 캐릭터에 적용 중이에요.' };
+    }
     const bans = getCharacterBans(characterUuid);
     if (bans.some((ban) => ban.type === 'term' && String(ban.term).toLocaleLowerCase() === term.toLocaleLowerCase())) {
         return { ok: false, reason: '이미 등록된 금지어예요.' };
@@ -1766,7 +1786,7 @@ function renderPatterns(patterns) {
             const unpin = document.createElement('button');
             unpin.type = 'button';
             unpin.className = 'menu_button ttotto-pattern-unpin';
-            unpin.textContent = '영구 금지 해제';
+            unpin.textContent = pattern.characterUuid ? '영구 금지 해제' : '전역 금지 삭제';
             unpin.addEventListener('click', () => {
                 if (pattern.characterUuid) {
                     removePermanentBan(pattern.characterUuid, pattern.banId);
@@ -1852,7 +1872,7 @@ function updateSmartStatus(state) {
     element.hidden = true;
 }
 
-function addGlobalBan(rawTerm) {
+export function addGlobalBan(rawTerm) {
     const term = cleanBanTerm(rawTerm);
     if (!term) return { ok: false, reason: '금지어는 1~80자로 입력해 주세요.' };
     const settings = getSettings();
@@ -1862,8 +1882,22 @@ function addGlobalBan(rawTerm) {
     if (settings.globalBans.length >= 100) return { ok: false, reason: '전역 금지어는 최대 100개까지 저장할 수 있어요.' };
     settings.globalBans.push(term);
     settings.globalBanIds[normalizedBanTermKey(term)] = newBanRegistrationId('global', normalizedBanTermKey(term));
+    let removedCharacterDuplicates = 0;
+    const key = normalizedBanTermKey(term);
+    for (const [uuid, rawBans] of Object.entries(settings.characterBans)) {
+        if (!Array.isArray(rawBans)) continue;
+        const kept = rawBans.filter((ban) => {
+            const duplicate = ban?.type === 'term' && normalizedBanTermKey(ban.term) === key;
+            if (duplicate) {
+                removedCharacterDuplicates += 1;
+                resetOffense(ban.term, uuid, String(ban.id ?? ''));
+            }
+            return !duplicate;
+        });
+        if (kept.length !== rawBans.length) settings.characterBans[uuid] = kept;
+    }
     saveSettings();
-    return { ok: true };
+    return { ok: true, removedCharacterDuplicates };
 }
 
 export function removeGlobalBan(rawTerm) {

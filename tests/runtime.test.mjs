@@ -26,7 +26,7 @@ test('금지어는 독립된 실제 표현일 때만 일치한다', async () => 
     assert.equal(module.stripBanCounterText('<thinking>청년을 피해야 한다.'), '');
 });
 
-test('전역 금지어는 설정 목록과 감지 목록이 공유하는 삭제 함수에서 실제로 제거된다', async () => {
+test('전역 금지어는 캐릭터별 중복을 자동 정리하고 전역 삭제로만 완전히 제거된다', async () => {
     let settingsSaveCount = 0;
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -35,6 +35,13 @@ test('전역 금지어는 설정 목록과 감지 목록이 공유하는 삭제 
             ttotto: {
                 globalBans: [' VISE ', 'anchor'],
                 globalBanIds: { vise: 'global-vise-id', anchor: 'global-anchor-id' },
+                characterUuids: { 'peter.png': 'uuid-peter' },
+                characterBans: {
+                    'uuid-peter': [
+                        { id: 'character-vise-id', type: 'term', term: 'vise', characterUuid: 'uuid-peter' },
+                        { id: 'character-jaw-id', type: 'term', term: 'jaw', characterUuid: 'uuid-peter' },
+                    ],
+                },
             },
         },
         chatMetadata: {
@@ -49,7 +56,7 @@ test('전역 금지어는 설정 목록과 감지 목록이 공유하는 삭제 
             },
         },
         chatId: 'global-delete-test', groupId: null, characterId: 0,
-        characters: [], groups: [], chat: [],
+        characters: [{ name: 'Peter', avatar: 'peter.png' }], groups: [], chat: [],
         setExtensionPrompt() {},
         saveSettingsDebounced() { settingsSaveCount += 1; },
         saveMetadataDebounced() {},
@@ -57,8 +64,19 @@ test('전역 금지어는 설정 목록과 감지 목록이 공유하는 삭제 
     globalThis.SillyTavern = { getContext: () => context };
     const module = await import(`../index.js?global-delete=${Date.now()}`);
 
+    const duplicate = module.addManualBan('uuid-peter', 'VISE');
+    assert.equal(duplicate.ok, false);
+    assert.match(duplicate.reason, /이미 전역 금지어/);
+    assert.deepEqual(context.extensionSettings.ttotto.characterBans['uuid-peter'].map((ban) => ban.term), ['jaw']);
+
+    const promoted = module.addGlobalBan('jaw');
+    assert.equal(promoted.ok, true);
+    assert.equal(promoted.removedCharacterDuplicates, 1);
+    assert.deepEqual(context.extensionSettings.ttotto.characterBans['uuid-peter'], []);
+    assert.deepEqual(context.extensionSettings.ttotto.globalBans, [' VISE ', 'anchor', 'jaw']);
+
     assert.equal(module.removeGlobalBan('vise'), true);
-    assert.deepEqual(context.extensionSettings.ttotto.globalBans, ['anchor']);
+    assert.deepEqual(context.extensionSettings.ttotto.globalBans, ['anchor', 'jaw']);
     assert.equal(context.extensionSettings.ttotto.globalBanIds.vise, undefined);
     assert.equal(context.chatMetadata.ttotto.banOffenses['global|global-vise-id'], undefined);
     assert.deepEqual(context.chatMetadata.ttotto.lastBanHits, []);
