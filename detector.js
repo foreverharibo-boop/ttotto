@@ -820,20 +820,21 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     }
     const narration = detected.filter((pattern) => pattern.scope === 'narration');
     const dialogue = detected.filter((pattern) => pattern.scope === 'dialogue');
-    const strongBans = Boolean(exclusionInfo?.banPreventionStrong) && compactTerms.length > 0;
+    const strongBans = Boolean(exclusionInfo?.banPreventionStrong) && permanent.length > 0;
     const lines = [
         '<ttotto_anti_repetition>',
         'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
         'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
     ];
 
+    if (strongBans) {
+        lines.push('STRICT PERMANENT-BAN MODE — HARD OUTPUT CONSTRAINT: Any violation of a permanent banned expression or permanent structure rule in the final reply makes the entire response invalid. Silently delete or naturally rewrite every violating sentence before sending without changing plot facts, characterization, tone, or continuity.');
+        lines.push('MANDATORY TWO-PASS PERMANENT-BAN VALIDATION: First scan every dialogue line, then scan every narration sentence against the complete banned-expression list and every permanent structure rule below. The response is not valid until no violation remains. Never mention this validation or the bans in the story.');
+    }
+
     if (compactTerms.length) {
         lines.push('Permanent banned expressions — global and character-specific; apply to all dialogue and narration:');
         lines.push('Never output, quote, refer to, or discuss any expression in the list below. Match case-insensitively and also avoid trivial capitalization, spacing, punctuation, hyphenation, or inflection variants and close paraphrases that name the same concept.');
-        if (strongBans) {
-            lines.push('STRICT BAN MODE — HARD OUTPUT CONSTRAINT: Any listed expression or prohibited variant in the final reply makes the entire response invalid. Silently delete or naturally rewrite every violating sentence before sending without changing plot facts, characterization, tone, or continuity.');
-            lines.push('MANDATORY TWO-PASS BAN VALIDATION: First scan every dialogue line, then scan every narration sentence against the complete list. The response is not valid until no banned expression or prohibited variant remains. Never mention this validation or the bans in the story.');
-        }
         const escalated = compactTerms.filter((item) => item.escalated > 0);
         if (escalated.length) {
             lines.push(`TOP PRIORITY — previously violated despite instructions: ${escalated.map((item) => `${JSON.stringify(item.term)} violated ${item.escalated} time(s)`).join('; ')}. Comply with zero exceptions.`);

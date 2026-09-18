@@ -78,15 +78,15 @@ test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제�
     assert.match(html, /최대 8개/);
 });
 
-test('금지어 방지 강화 모드는 별도 토글과 압축 주입 설명을 제공한다', async () => {
+test('금지어들 방지 강화 모드는 금지어와 구조 전체를 대상으로 제공된다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     const echoStrongIndex = html.indexOf('id="ttotto-echo-prevention-strong"');
     const banStrongIndex = html.indexOf('id="ttotto-ban-prevention-strong"');
     const dragIndex = html.indexOf('id="ttotto-drag-ban-menu-enabled"');
     assert.ok(echoStrongIndex >= 0 && banStrongIndex > echoStrongIndex && dragIndex > banStrongIndex);
-    assert.match(html, /금지어 방지 강화 모드/);
-    assert.match(html, /공통 규칙과 압축 목록으로 전부 주입/);
+    assert.match(html, /금지어들 방지 강화 모드/);
+    assert.match(html, /전역·캐릭터별 금지어와 구조 금지를 모두 강화/);
     assert.match(js, /banPreventionStrong:\s*false/);
     assert.match(js, /bindSetting\('ttotto-ban-prevention-strong',\s*'banPreventionStrong',\s*Boolean\)/);
     assert.doesNotMatch(await readFile(new URL('../detector.js', import.meta.url), 'utf8'), /source === 'pinned'\)\.slice\(0,\s*30\)/);

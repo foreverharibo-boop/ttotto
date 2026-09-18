@@ -260,7 +260,7 @@ test('영구 금지어는 30개를 넘어도 전부 압축 목록으로 주입�
     assert.ok(prompt.length < 3000, `압축 주입문이 너무 깁니다: ${prompt.length}자`);
 });
 
-test('금지어 강화 모드는 답변 무효 선언과 대사·서술 이중 검사를 한 번만 추가한다', () => {
+test('금지어들 강화 모드는 금지어와 구조 모두에 답변 무효·이중 검사를 한 번만 추가한다', () => {
     const patterns = ['jaw', 'anchor'].map((term) => ({
         source: 'pinned',
         kind: 'permanent-term',
@@ -268,15 +268,37 @@ test('금지어 강화 모드는 답변 무효 선언과 대사·서술 이중 �
         example: term,
         instruction: `Never use ${term}.`,
     }));
+    patterns.push({
+        source: 'pinned',
+        kind: 'permanent-pattern',
+        scope: 'narration',
+        instruction: 'Do not begin a sentence with "He stared at her".',
+    });
     const normalPrompt = buildInjection(patterns, 6);
     const strongPrompt = buildInjection(patterns, 6, { banPreventionStrong: true });
-    assert.doesNotMatch(normalPrompt, /STRICT BAN MODE/);
-    assert.match(strongPrompt, /STRICT BAN MODE — HARD OUTPUT CONSTRAINT/);
+    assert.doesNotMatch(normalPrompt, /STRICT PERMANENT-BAN MODE/);
+    assert.match(strongPrompt, /STRICT PERMANENT-BAN MODE — HARD OUTPUT CONSTRAINT/);
     assert.match(strongPrompt, /entire response invalid/);
-    assert.match(strongPrompt, /MANDATORY TWO-PASS BAN VALIDATION/);
-    assert.match(strongPrompt, /First scan every dialogue line, then scan every narration sentence/);
-    assert.equal((strongPrompt.match(/STRICT BAN MODE/g) ?? []).length, 1);
+    assert.match(strongPrompt, /MANDATORY TWO-PASS PERMANENT-BAN VALIDATION/);
+    assert.match(strongPrompt, /complete banned-expression list and every permanent structure rule/);
+    assert.equal((strongPrompt.match(/STRICT PERMANENT-BAN MODE/g) ?? []).length, 1);
     assert.match(strongPrompt, /BANNED: "jaw" \| "anchor"/);
+    assert.match(strongPrompt, /Do not begin a sentence with "He stared at her"/);
+});
+
+test('구조 금지만 등록돼 있어도 강화 모드가 작동하고 30개를 넘어 전부 주입한다', () => {
+    const structures = Array.from({ length: 42 }, (_, index) => ({
+        source: 'pinned',
+        kind: 'permanent-pattern',
+        scope: 'narration',
+        instruction: `Avoid permanent structure ${index}.`,
+    }));
+    const prompt = buildInjection(structures, 6, { banPreventionStrong: true });
+    assert.match(prompt, /STRICT PERMANENT-BAN MODE/);
+    assert.match(prompt, /Permanent structure bans/);
+    for (let index = 0; index < 42; index += 1) {
+        assert.match(prompt, new RegExp(`Avoid permanent structure ${index}\\.`));
+    }
 });
 
 test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서술을 함께 금지한다', () => {

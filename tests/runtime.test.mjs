@@ -606,12 +606,21 @@ test('영구 금지어와 1회 쉬기, UUID별 지난 채팅 기억이 함께 �
                 sensitivity: 'normal',
                 narrationEnabled: true,
                 dialogueEnabled: true,
+                banPreventionStrong: true,
                 smartAnalysis: false,
                 maxInjectedPatterns: 6,
                 characterUuids: { 'same-card.png': 'uuid-same', 'other-card.png': 'uuid-other' },
                 characterAllowances: {},
                 characterBans: {
-                    'uuid-same': [{ id: 'term-jaw', type: 'term', term: 'jaw muscles', characterUuid: 'uuid-same' }],
+                    'uuid-same': [
+                        { id: 'term-jaw', type: 'term', term: 'jaw muscles', characterUuid: 'uuid-same' },
+                        {
+                            id: 'structure-stare', type: 'pattern', characterUuid: 'uuid-same',
+                            label: '시선 문장 시작', scope: 'narration',
+                            instruction: 'Do not begin a sentence with "He stared at her".',
+                            examples: ['He stared at her.'],
+                        },
+                    ],
                 },
                 characterHistory: {},
                 crossChatMemoryEnabled: true,
@@ -643,6 +652,8 @@ test('영구 금지어와 1회 쉬기, UUID별 지난 채팅 기억이 함께 �
 
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
     assert.match(promptCalls.at(-1)[1], /jaw muscles/);
+    assert.match(promptCalls.at(-1)[1], /Do not begin a sentence with "He stared at her"/);
+    assert.match(promptCalls.at(-1)[1], /STRICT PERMANENT-BAN MODE/);
 
     context.chatId = 'chat-b';
     context.chatMetadata = { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } };
@@ -657,6 +668,8 @@ test('영구 금지어와 1회 쉬기, UUID별 지난 채팅 기억이 함께 �
     const otherCard = module.collectAssistantMessages({ applyWindow: false });
     assert.equal(otherCard.length, 1);
     assert.equal(otherCard[0].characterUuid, 'uuid-other');
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.doesNotMatch(promptCalls.at(-1)[1], /jaw muscles|He stared at her|STRICT PERMANENT-BAN MODE/);
     module.onDisable();
 });
 

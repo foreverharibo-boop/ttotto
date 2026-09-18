@@ -114,8 +114,8 @@
 
         <label class="ttotto-setting-row" for="ttotto-ban-prevention-strong">
           <span>
-            <strong>금지어 방지 강화 모드</strong>
-            <small>전역·캐릭터별 금지어가 하나라도 나오면 답변을 무효로 취급하고, 대사와 서술을 두 번 검사해 출력 전에 다시 쓰도록 강하게 지시해요. 금지어는 공통 규칙과 압축 목록으로 전부 주입되며 추가 API 호출은 없어요.</small>
+            <strong>금지어들 방지 강화 모드</strong>
+            <small>전역·캐릭터별 금지어와 구조 금지를 모두 강화해요. 하나라도 위반하면 답변을 무효로 취급하고, 대사와 서술을 두 번 검사해 출력 전에 다시 쓰도록 강하게 지시해요. 추가 API 호출은 없어요.</small>
           </span>
           <input id="ttotto-ban-prevention-strong" type="checkbox">
         </label>
@@ -174,7 +174,7 @@
             <button id="ttotto-add-structure" class="menu_button" type="button">구조 금지 추가</button>
           </div>
           <div id="ttotto-ban-list" class="ttotto-ban-list"></div>
-          <small>영구 금지어는 개수 제한 없이 매 생성에 주입돼요. 목록이 많으면 입력 토큰이 늘 수 있지만, 공통 지침은 한 번만 넣고 금지어만 압축해 전달해요. AI가 지시를 무시할 가능성까지 0%로 만들 수는 없어요.</small>
+          <small>영구 금지어와 구조 금지는 개수 제한 없이 매 생성에 주입돼요. 목록이 많으면 입력 토큰이 늘 수 있지만, 공통 지침은 한 번만 넣고 일반 금지어는 압축해 전달해요. AI가 지시를 무시할 가능성까지 0%로 만들 수는 없어요.</small>
         </div>
 
         <label class="ttotto-setting-row" for="ttotto-cross-memory-enabled">
