@@ -794,21 +794,58 @@ export function mergePatterns(localPatterns, smartPatterns) {
 
 export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     const valid = patterns.filter((pattern) => pattern?.instruction);
-    const permanent = valid.filter((pattern) => pattern.source === 'pinned').slice(0, 30);
+    // Permanent bans are user-authored constraints, so never truncate them.
+    // Term bans use one shared rule plus a compact list instead of repeating
+    // the same long instruction for every registered word.
+    const permanent = valid.filter((pattern) => pattern.source === 'pinned');
     const detected = valid.filter((pattern) => pattern.source !== 'pinned').slice(0, Math.max(1, maxPatterns));
     const selected = [...permanent, ...detected];
     if (!selected.length) return '';
+    const permanentTerms = permanent.filter((pattern) => pattern.kind === 'permanent-term');
+    const permanentStructures = permanent.filter((pattern) => pattern.kind !== 'permanent-term');
+    const compactTerms = [];
+    const seenTerms = new Map();
+    for (const pattern of permanentTerms) {
+        const term = String(pattern.example ?? pattern.examples?.[0] ?? '').replace(/\s+/g, ' ').trim();
+        if (!term) continue;
+        const key = term.normalize('NFKC').toLocaleLowerCase();
+        const previous = seenTerms.get(key);
+        if (previous) {
+            previous.escalated = Math.max(previous.escalated, Number(pattern.escalated) || 0);
+            continue;
+        }
+        const item = { term, escalated: Number(pattern.escalated) || 0 };
+        seenTerms.set(key, item);
+        compactTerms.push(item);
+    }
     const narration = detected.filter((pattern) => pattern.scope === 'narration');
     const dialogue = detected.filter((pattern) => pattern.scope === 'dialogue');
+    const strongBans = Boolean(exclusionInfo?.banPreventionStrong) && compactTerms.length > 0;
     const lines = [
         '<ttotto_anti_repetition>',
         'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
         'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
     ];
 
-    if (permanent.length) {
-        lines.push('Permanent bans — global and character-specific (apply strictly in both narration and dialogue):');
-        permanent.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
+    if (compactTerms.length) {
+        lines.push('Permanent banned expressions — global and character-specific; apply to all dialogue and narration:');
+        lines.push('Never output, quote, refer to, or discuss any expression in the list below. Match case-insensitively and also avoid trivial capitalization, spacing, punctuation, hyphenation, or inflection variants and close paraphrases that name the same concept.');
+        if (strongBans) {
+            lines.push('STRICT BAN MODE — HARD OUTPUT CONSTRAINT: Any listed expression or prohibited variant in the final reply makes the entire response invalid. Silently delete or naturally rewrite every violating sentence before sending without changing plot facts, characterization, tone, or continuity.');
+            lines.push('MANDATORY TWO-PASS BAN VALIDATION: First scan every dialogue line, then scan every narration sentence against the complete list. The response is not valid until no banned expression or prohibited variant remains. Never mention this validation or the bans in the story.');
+        }
+        const escalated = compactTerms.filter((item) => item.escalated > 0);
+        if (escalated.length) {
+            lines.push(`TOP PRIORITY — previously violated despite instructions: ${escalated.map((item) => `${JSON.stringify(item.term)} violated ${item.escalated} time(s)`).join('; ')}. Comply with zero exceptions.`);
+        }
+        for (let index = 0; index < compactTerms.length; index += 12) {
+            lines.push(`BANNED: ${compactTerms.slice(index, index + 12).map((item) => JSON.stringify(item.term)).join(' | ')}`);
+        }
+    }
+
+    if (permanentStructures.length) {
+        lines.push('Permanent structure bans — apply strictly as written:');
+        permanentStructures.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
 
     if (narration.length) {

@@ -15,7 +15,7 @@ const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.21';
+const EXTENSION_VERSION = '1.8.22';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     dialogueEnabled: true,
     echoPreventionEnabled: true,
     echoPreventionStrong: false,
+    banPreventionStrong: false,
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -153,6 +154,7 @@ function getSettings() {
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
+    settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     settings.dragBanMenuEnabled = settings.dragBanMenuEnabled !== false;
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
@@ -1267,6 +1269,7 @@ function analysisDependencyFingerprint(settings, state) {
         sensitivity: settings.sensitivity,
         narrationEnabled: settings.narrationEnabled,
         dialogueEnabled: settings.dialogueEnabled,
+        banPreventionStrong: settings.banPreventionStrong,
         smartAnalysis: settings.smartAnalysis,
         maxInjectedPatterns: settings.maxInjectedPatterns,
         crossChatMemoryEnabled: settings.crossChatMemoryEnabled,
@@ -1338,7 +1341,10 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
     const prompt = buildInjection(
         patterns,
         Number(settings.maxInjectedPatterns) || DEFAULT_SETTINGS.maxInjectedPatterns,
-        { excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks },
+        {
+            excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
+            banPreventionStrong: settings.banPreventionStrong,
+        },
     );
 
     analysisCache = {
@@ -2199,6 +2205,8 @@ function updateUi(analysisOverride = null) {
         strongEchoCheckbox.checked = Boolean(settings.echoPreventionStrong);
         strongEchoCheckbox.disabled = !settings.echoPreventionEnabled;
     }
+    const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
+    if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
     const dragBanMenuCheckbox = document.getElementById('ttotto-drag-ban-menu-enabled');
     if (dragBanMenuCheckbox) dragBanMenuCheckbox.checked = Boolean(settings.dragBanMenuEnabled);
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
@@ -2334,6 +2342,7 @@ function bindUi() {
     bindSetting('ttotto-dialogue-enabled', 'dialogueEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
+    bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
     bindSetting('ttotto-drag-ban-menu-enabled', 'dragBanMenuEnabled', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);

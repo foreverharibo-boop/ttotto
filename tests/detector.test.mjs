@@ -240,6 +240,45 @@ test('영구 금지 항목은 일반 감지 개수 제한과 별개로 항상 �
     assert.doesNotMatch(prompt, /Avoid B/);
 });
 
+test('영구 금지어는 30개를 넘어도 전부 압축 목록으로 주입한다', () => {
+    const patterns = Array.from({ length: 45 }, (_, index) => ({
+        source: 'pinned',
+        kind: 'permanent-term',
+        scope: 'narration',
+        example: `forbidden-${index}`,
+        instruction: `Never use or refer to the banned expression "forbidden-${index}" anywhere.`,
+        escalated: index === 44 ? 2 : 0,
+    }));
+    const prompt = buildInjection(patterns, 1);
+    for (let index = 0; index < 45; index += 1) {
+        assert.match(prompt, new RegExp(`"forbidden-${index}"`));
+    }
+    assert.match(prompt, /Permanent banned expressions/);
+    assert.match(prompt, /case-insensitively/);
+    assert.match(prompt, /previously violated despite instructions: "forbidden-44" violated 2 time\(s\)/);
+    assert.equal((prompt.match(/Never output, quote, refer to, or discuss/g) ?? []).length, 1);
+    assert.ok(prompt.length < 3000, `압축 주입문이 너무 깁니다: ${prompt.length}자`);
+});
+
+test('금지어 강화 모드는 답변 무효 선언과 대사·서술 이중 검사를 한 번만 추가한다', () => {
+    const patterns = ['jaw', 'anchor'].map((term) => ({
+        source: 'pinned',
+        kind: 'permanent-term',
+        scope: 'narration',
+        example: term,
+        instruction: `Never use ${term}.`,
+    }));
+    const normalPrompt = buildInjection(patterns, 6);
+    const strongPrompt = buildInjection(patterns, 6, { banPreventionStrong: true });
+    assert.doesNotMatch(normalPrompt, /STRICT BAN MODE/);
+    assert.match(strongPrompt, /STRICT BAN MODE — HARD OUTPUT CONSTRAINT/);
+    assert.match(strongPrompt, /entire response invalid/);
+    assert.match(strongPrompt, /MANDATORY TWO-PASS BAN VALIDATION/);
+    assert.match(strongPrompt, /First scan every dialogue line, then scan every narration sentence/);
+    assert.equal((strongPrompt.match(/STRICT BAN MODE/g) ?? []).length, 1);
+    assert.match(strongPrompt, /BANNED: "jaw" \| "anchor"/);
+});
+
 test('에코 방지 주입은 직전 유저 메시지의 복사와 유사 재서술을 함께 금지한다', () => {
     const prompt = buildEchoPreventionInjection();
     assert.match(prompt, /<ttotto_anti_echo>/);
