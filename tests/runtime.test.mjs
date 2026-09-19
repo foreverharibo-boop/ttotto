@@ -360,7 +360,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
-test('WEAVE·금지어·에코는 한 depth 0 주입문 안에서 설정한 모든 순서를 따른다', async () => {
+test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입문 안에서 설정한 모든 순서를 따른다', async () => {
     const promptCalls = [];
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -406,14 +406,12 @@ test('WEAVE·금지어·에코는 한 depth 0 주입문 안에서 설정한 모�
     assert.ok(characterIndex > metaIndex);
     assert.match(injected, /A genius is not omniscient/);
 
-    const permutations = [
-        ['weave', 'ban', 'echo'],
-        ['weave', 'echo', 'ban'],
-        ['ban', 'weave', 'echo'],
-        ['ban', 'echo', 'weave'],
-        ['echo', 'weave', 'ban'],
-        ['echo', 'ban', 'weave'],
-    ];
+    const permute = (items) => items.length <= 1
+        ? [items]
+        : items.flatMap((item, index) => permute(items.filter((_, candidate) => candidate !== index))
+            .map((rest) => [item, ...rest]));
+    const permutations = permute(['ban', 'echo', 'metagaming', 'characterAi']);
+    assert.equal(permutations.length, 24);
     for (const promptOrder of permutations) {
         const assembled = module.buildCompleteGenerationInjection(
             '<BAN_MARKER>forbidden</BAN_MARKER>',
@@ -430,9 +428,10 @@ test('WEAVE·금지어·에코는 한 depth 0 주입문 안에서 설정한 모�
             context.chat,
         );
         const positions = {
-            weave: assembled.indexOf('<ANTI_METAGAMING>'),
             ban: assembled.indexOf('<BAN_MARKER>'),
             echo: assembled.indexOf('<ttotto_anti_echo>'),
+            metagaming: assembled.indexOf('<ANTI_METAGAMING>'),
+            characterAi: assembled.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'),
         };
         assert.ok(Object.values(positions).every((position) => position >= 0));
         assert.deepEqual(
@@ -441,7 +440,15 @@ test('WEAVE·금지어·에코는 한 depth 0 주입문 안에서 설정한 모�
             `주입 순서: ${promptOrder.join(' → ')}`,
         );
     }
-    assert.deepEqual(module.normalizePromptOrder(['echo', 'echo', 'unknown']), ['echo', 'ban', 'weave']);
+    assert.deepEqual(
+        module.normalizePromptOrder(['echo', 'weave', 'ban']),
+        ['echo', 'metagaming', 'characterAi', 'ban'],
+        'v1.10의 WEAVE 위치에서 메타게이밍과 캐릭터 AI화를 분리함',
+    );
+    assert.deepEqual(
+        module.normalizePromptOrder(['echo', 'echo', 'unknown']),
+        ['echo', 'ban', 'metagaming', 'characterAi'],
+    );
 
     promptCalls.length = 0;
     context.extensionSettings.ttotto.metagamingPromptEnabled = false;

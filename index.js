@@ -10,7 +10,8 @@ import {
     stripNonProse,
 } from './detector.js';
 import {
-    buildImportantPromptInjection,
+    buildCharacterAiPromptInjection,
+    buildMetagamingPromptInjection,
     normalizeImportantPromptSettings,
 } from './important-prompts.js';
 
@@ -22,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.10.0';
+const EXTENSION_VERSION = '1.11.0';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -31,11 +32,12 @@ const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'cont
 const PROMPT_POSITION_IN_CHAT = 1;
 const PROMPT_ROLE_SYSTEM = 0;
 const IMPORTANT_PROMPT_DEPTH = 4;
-const PROMPT_ORDER_KEYS = Object.freeze(['ban', 'echo', 'weave']);
+const PROMPT_ORDER_KEYS = Object.freeze(['ban', 'echo', 'metagaming', 'characterAi']);
 const PROMPT_ORDER_LABELS = Object.freeze({
-    weave: 'WEAVE 프롬프트',
     ban: '또또 금지어',
     echo: '또또 에코 방지',
+    metagaming: '메타게이밍 방지',
+    characterAi: '캐릭터 AI화 방지',
 });
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -107,6 +109,13 @@ export function normalizePromptOrder(order) {
     const normalized = [];
     for (const value of Array.isArray(order) ? order : []) {
         const key = String(value ?? '');
+        // v1.10의 합쳐진 WEAVE 항목은 저장된 위치를 유지한 채 두 항목으로 나눈다.
+        if (key === 'weave') {
+            for (const weaveKey of ['metagaming', 'characterAi']) {
+                if (!normalized.includes(weaveKey)) normalized.push(weaveKey);
+            }
+            continue;
+        }
         if (PROMPT_ORDER_KEYS.includes(key) && !normalized.includes(key)) normalized.push(key);
     }
     for (const key of PROMPT_ORDER_KEYS) {
@@ -1474,9 +1483,10 @@ export function buildCompleteGenerationInjection(analysisPrompt, settings, gener
         contextChat,
     );
     const sections = {
-        weave: buildImportantPromptInjection(settings),
         ban,
         echo,
+        metagaming: buildMetagamingPromptInjection(settings),
+        characterAi: buildCharacterAiPromptInjection(settings),
     };
     return normalizePromptOrder(settings?.promptOrder)
         .map((key) => sections[key])
