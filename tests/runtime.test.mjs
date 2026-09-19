@@ -360,7 +360,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
-test('WEAVE 두 항목을 모두 켜면 각각의 시스템 프롬프트로 깊이 4에 함께 주입한다', async () => {
+test('WEAVE 두 항목은 금지어와 에코보다 위에 고정된 순서로 함께 주입한다', async () => {
     const promptCalls = [];
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -368,16 +368,19 @@ test('WEAVE 두 항목을 모두 켜면 각각의 시스템 프롬프트로 깊�
         extensionSettings: {
             ttotto: {
                 enabled: true,
-                echoPreventionEnabled: false,
+                echoPreventionEnabled: true,
                 metagamingPromptEnabled: true,
                 metagamingPromptVersion: 'mini',
                 characterAiPromptEnabled: true,
                 characterAiPromptVersion: 'compact',
+                globalBans: ['forbidden phrase'],
+                globalBanIds: { 'forbidden phrase': 'global-forbidden-id' },
             },
         },
         chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
         chatId: 'important-prompt-test', groupId: null, characterId: 0,
-        characters: [], groups: [], chat: [],
+        characters: [], groups: [],
+        chat: [{ is_user: true, mes: '“Do not repeat this line.”' }],
         setExtensionPrompt(...args) { promptCalls.push(args); },
         saveSettingsDebounced() {}, saveMetadataDebounced() {},
     };
@@ -385,27 +388,29 @@ test('WEAVE 두 항목을 모두 켜면 각각의 시스템 프롬프트로 깊�
     globalThis.toastr = { info() {}, success() {}, error() {} };
     await import(`../index.js?important-prompt=${Date.now()}`);
 
-    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
     const active = promptCalls.filter((call) => call[1]);
-    assert.equal(active.length, 2);
-    assert.deepEqual(active.map((call) => call[0]), [
-        'ttotto_weave_metagaming',
-        'ttotto_weave_character_ai',
-    ]);
-    for (const call of active) {
-        assert.equal(call[2], 1);
-        assert.equal(call[3], 4);
-        assert.equal(call[5], 0);
-    }
-    assert.match(active[0][1], /<ANTI_METAGAMING>/);
-    assert.doesNotMatch(active[0][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
-    assert.match(active[1][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
-    assert.match(active[1][1], /A genius is not omniscient/);
-    assert.doesNotMatch(active[1][1], /<ANTI_METAGAMING>/);
+    assert.equal(active.length, 1);
+    assert.equal(active[0][0], 'ttotto_anti_repetition');
+    assert.equal(active[0][2], 1);
+    assert.equal(active[0][3], 0);
+    assert.equal(active[0][5], 0);
+    const injected = active[0][1];
+    const metaIndex = injected.indexOf('<ANTI_METAGAMING>');
+    const characterIndex = injected.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>');
+    const banIndex = injected.indexOf('<ttotto_anti_repetition>');
+    const echoIndex = injected.indexOf('<ttotto_anti_echo>');
+    assert.ok(metaIndex >= 0);
+    assert.ok(characterIndex > metaIndex);
+    assert.ok(banIndex > characterIndex);
+    assert.ok(echoIndex > banIndex);
+    assert.match(injected, /A genius is not omniscient/);
 
     promptCalls.length = 0;
     context.extensionSettings.ttotto.metagamingPromptEnabled = false;
     context.extensionSettings.ttotto.characterAiPromptEnabled = false;
+    context.extensionSettings.ttotto.echoPreventionEnabled = false;
+    context.extensionSettings.ttotto.globalBans = [];
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
     assert.equal(promptCalls.filter((call) => call[1]).length, 0);
 });
