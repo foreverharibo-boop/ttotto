@@ -355,6 +355,13 @@
 #ttotto-settings .ttotto-important-prompts {
   display: grid;
   gap: 4px;
+  margin: 10px 0;
+  padding: 10px 0;
+}
+
+#ttotto-settings .ttotto-important-prompt-item {
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
 }
 
 #ttotto-settings .ttotto-important-prompt-row {
@@ -363,8 +370,6 @@
   align-items: center;
   gap: 9px;
   min-height: 42px;
-  padding-top: 7px;
-  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
 }
 
 #ttotto-settings .ttotto-important-prompt-row label {
@@ -382,6 +387,14 @@
 #ttotto-settings .ttotto-important-prompt-row .text_pole:disabled {
   opacity: 0.48;
   cursor: not-allowed;
+}
+
+#ttotto-settings .ttotto-important-prompt-description {
+  display: block;
+  margin: -2px 0 4px 27px;
+  opacity: 0.72;
+  font-size: 0.84em;
+  line-height: 1.35;
 }
 
 #ttotto-settings #ttotto-custom-exclusions {

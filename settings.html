@@ -120,27 +120,32 @@
           <input id="ttotto-ban-prevention-strong" type="checkbox">
         </label>
 
-        <div class="ttotto-subsection ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
-          <strong id="ttotto-important-prompts-title">중요 프롬프트</strong>
-          <small>체크한 항목만 매 생성에 주입돼요. 오른쪽 선택 상자에서 사용할 버전을 고를 수 있어요.</small>
+        <div class="ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
+          <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>
 
-          <div class="ttotto-important-prompt-row">
-            <input id="ttotto-metagaming-prompt-enabled" type="checkbox" aria-label="메타게이밍 방지 활성화">
-            <label for="ttotto-metagaming-prompt-enabled">메타게이밍 방지</label>
-            <select id="ttotto-metagaming-prompt-version" class="text_pole" aria-label="메타게이밍 방지 버전">
-              <option value="full">원본</option>
-              <option value="mini">초축약</option>
-            </select>
+          <div class="ttotto-important-prompt-item">
+            <div class="ttotto-important-prompt-row">
+              <input id="ttotto-metagaming-prompt-enabled" type="checkbox" aria-label="메타게이밍 방지 활성화">
+              <label for="ttotto-metagaming-prompt-enabled">메타게이밍 방지</label>
+              <select id="ttotto-metagaming-prompt-version" class="text_pole" aria-label="메타게이밍 방지 버전">
+                <option value="full">원본</option>
+                <option value="mini">초축약</option>
+              </select>
+            </div>
+            <small class="ttotto-important-prompt-description">캐릭터가 장면 밖 정보나 타인의 속마음을 이미 아는 것처럼 행동하지 않게 해요.</small>
           </div>
 
-          <div class="ttotto-important-prompt-row">
-            <input id="ttotto-character-ai-prompt-enabled" type="checkbox" aria-label="캐릭터 AI화 방지 활성화">
-            <label for="ttotto-character-ai-prompt-enabled">캐릭터 AI화 방지</label>
-            <select id="ttotto-character-ai-prompt-version" class="text_pole" aria-label="캐릭터 AI화 방지 버전">
-              <option value="full">원본</option>
-              <option value="compact">축약</option>
-              <option value="mini">초축약</option>
-            </select>
+          <div class="ttotto-important-prompt-item">
+            <div class="ttotto-important-prompt-row">
+              <input id="ttotto-character-ai-prompt-enabled" type="checkbox" aria-label="캐릭터 AI화 방지 활성화">
+              <label for="ttotto-character-ai-prompt-enabled">캐릭터 AI화 방지</label>
+              <select id="ttotto-character-ai-prompt-version" class="text_pole" aria-label="캐릭터 AI화 방지 버전">
+                <option value="full">원본</option>
+                <option value="compact">축약</option>
+                <option value="mini">초축약</option>
+              </select>
+            </div>
+            <small class="ttotto-important-prompt-description">캐릭터가 만능 AI처럼 답하지 않고 설정·경험·기억 범위 안에서 자연스럽게 반응하게 해요.</small>
           </div>
         </div>
 
