@@ -25,18 +25,24 @@ export function normalizeImportantPromptSettings(settings) {
 }
 
 export function buildImportantPromptInjection(settings = {}) {
-    const prompts = [];
-    if (settings.metagamingPromptEnabled) {
-        const version = META_VERSIONS.has(String(settings.metagamingPromptVersion))
-            ? String(settings.metagamingPromptVersion)
-            : 'full';
-        prompts.push(IMPORTANT_PROMPTS.metagaming[version]);
-    }
-    if (settings.characterAiPromptEnabled) {
-        const version = CHARACTER_AI_VERSIONS.has(String(settings.characterAiPromptVersion))
-            ? String(settings.characterAiPromptVersion)
-            : 'full';
-        prompts.push(IMPORTANT_PROMPTS.characterAi[version]);
-    }
-    return prompts.filter(Boolean).join('\n\n');
+    return [
+        buildMetagamingPromptInjection(settings),
+        buildCharacterAiPromptInjection(settings),
+    ].filter(Boolean).join('\n\n');
+}
+
+export function buildMetagamingPromptInjection(settings = {}) {
+    if (!settings.metagamingPromptEnabled) return '';
+    const version = META_VERSIONS.has(String(settings.metagamingPromptVersion))
+        ? String(settings.metagamingPromptVersion)
+        : 'full';
+    return IMPORTANT_PROMPTS.metagaming[version];
+}
+
+export function buildCharacterAiPromptInjection(settings = {}) {
+    if (!settings.characterAiPromptEnabled) return '';
+    const version = CHARACTER_AI_VERSIONS.has(String(settings.characterAiPromptVersion))
+        ? String(settings.characterAiPromptVersion)
+        : 'full';
+    return IMPORTANT_PROMPTS.characterAi[version];
 }

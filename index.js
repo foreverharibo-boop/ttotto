@@ -10,17 +10,21 @@ import {
     stripNonProse,
 } from './detector.js';
 import {
+    buildCharacterAiPromptInjection,
     buildImportantPromptInjection,
+    buildMetagamingPromptInjection,
     normalizeImportantPromptSettings,
 } from './important-prompts.js';
 
 const MODULE_NAME = 'ttotto';
 const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
-const IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
+const METAGAMING_PROMPT_KEY = 'ttotto_weave_metagaming';
+const CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
+const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.9.1';
+const EXTENSION_VERSION = '1.9.2';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1377,7 +1381,13 @@ function invalidateAnalysis() {
 }
 
 function clearInjectedPrompt() {
-    for (const [key, depth] of [[PROMPT_KEY, 0], [IMPORTANT_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH]]) {
+    const promptsToClear = [
+        [PROMPT_KEY, 0],
+        [METAGAMING_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
+        [CHARACTER_AI_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
+        [LEGACY_IMPORTANT_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
+    ];
+    for (const [key, depth] of promptsToClear) {
         try {
             getContext().setExtensionPrompt(
                 key,
@@ -1451,12 +1461,23 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const recentMessages = collectAssistantMessages();
         const analysis = analyzeCurrentChat(false, recentMessages);
         const prompt = buildGenerationInjection(analysis.prompt, settings, type, _chat, getContext().chat);
-        const importantPrompt = buildImportantPromptInjection(settings);
-        if (!prompt && !importantPrompt) return;
-        if (importantPrompt) {
+        const metagamingPrompt = buildMetagamingPromptInjection(settings);
+        const characterAiPrompt = buildCharacterAiPromptInjection(settings);
+        if (!prompt && !metagamingPrompt && !characterAiPrompt) return;
+        if (metagamingPrompt) {
             getContext().setExtensionPrompt(
-                IMPORTANT_PROMPT_KEY,
-                importantPrompt,
+                METAGAMING_PROMPT_KEY,
+                metagamingPrompt,
+                PROMPT_POSITION_IN_CHAT,
+                IMPORTANT_PROMPT_DEPTH,
+                false,
+                PROMPT_ROLE_SYSTEM,
+            );
+        }
+        if (characterAiPrompt) {
+            getContext().setExtensionPrompt(
+                CHARACTER_AI_PROMPT_KEY,
+                characterAiPrompt,
                 PROMPT_POSITION_IN_CHAT,
                 IMPORTANT_PROMPT_DEPTH,
                 false,
@@ -1474,8 +1495,9 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
             );
         }
         const echoLabel = prompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
-        const importantLabel = importantPrompt ? ' + 중요 프롬프트' : '';
-        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${importantLabel} 주입`);
+        const weaveCount = Number(Boolean(metagamingPrompt)) + Number(Boolean(characterAiPrompt));
+        const weaveLabel = weaveCount ? ` + WEAVE ${weaveCount}개` : '';
+        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${weaveLabel} 주입`);
     } catch (error) {
         clearInjectedPrompt();
         console.error(`${LOG_PREFIX} 생성 전 주입 실패 — 본 채팅 생성은 계속합니다.`, error);

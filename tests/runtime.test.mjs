@@ -350,15 +350,17 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(listeners.get(eventTypes.MESSAGE_UPDATED)?.size ?? 0, 0);
     const beforeDisabledCall = promptCalls.length;
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
-    assert.equal(promptCalls.length, beforeDisabledCall + 2);
-    assert.deepEqual(promptCalls.slice(-2).map((call) => call[0]), [
+    assert.equal(promptCalls.length, beforeDisabledCall + 4);
+    assert.deepEqual(promptCalls.slice(-4).map((call) => call[0]), [
         'ttotto_anti_repetition',
+        'ttotto_weave_metagaming',
+        'ttotto_weave_character_ai',
         'ttotto_important_prompts',
     ]);
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
-test('중요 프롬프트는 체크된 버전만 별도 시스템 프롬프트로 깊이 4에 주입한다', async () => {
+test('WEAVE 두 항목을 모두 켜면 각각의 시스템 프롬프트로 깊이 4에 함께 주입한다', async () => {
     const promptCalls = [];
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -385,14 +387,21 @@ test('중요 프롬프트는 체크된 버전만 별도 시스템 프롬프트�
 
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
     const active = promptCalls.filter((call) => call[1]);
-    assert.equal(active.length, 1);
-    assert.equal(active[0][0], 'ttotto_important_prompts');
-    assert.equal(active[0][2], 1);
-    assert.equal(active[0][3], 4);
-    assert.equal(active[0][5], 0);
+    assert.equal(active.length, 2);
+    assert.deepEqual(active.map((call) => call[0]), [
+        'ttotto_weave_metagaming',
+        'ttotto_weave_character_ai',
+    ]);
+    for (const call of active) {
+        assert.equal(call[2], 1);
+        assert.equal(call[3], 4);
+        assert.equal(call[5], 0);
+    }
     assert.match(active[0][1], /<ANTI_METAGAMING>/);
-    assert.match(active[0][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
-    assert.match(active[0][1], /A genius is not omniscient/);
+    assert.doesNotMatch(active[0][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.match(active[1][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.match(active[1][1], /A genius is not omniscient/);
+    assert.doesNotMatch(active[1][1], /<ANTI_METAGAMING>/);
 
     promptCalls.length = 0;
     context.extensionSettings.ttotto.metagamingPromptEnabled = false;

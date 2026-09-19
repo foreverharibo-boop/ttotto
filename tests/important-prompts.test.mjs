@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
     IMPORTANT_PROMPTS,
+    buildCharacterAiPromptInjection,
     buildImportantPromptInjection,
+    buildMetagamingPromptInjection,
     normalizeImportantPromptSettings,
 } from '../important-prompts.js';
 
@@ -42,6 +44,14 @@ test('체크된 계열에서 선택한 버전 하나만 주입한다', () => {
         characterAiPromptVersion: 'mini',
     });
     assert.equal(both, `${IMPORTANT_PROMPTS.metagaming.full}\n\n${IMPORTANT_PROMPTS.characterAi.mini}`);
+    assert.equal(buildMetagamingPromptInjection({
+        metagamingPromptEnabled: true,
+        metagamingPromptVersion: 'mini',
+    }), IMPORTANT_PROMPTS.metagaming.mini);
+    assert.equal(buildCharacterAiPromptInjection({
+        characterAiPromptEnabled: true,
+        characterAiPromptVersion: 'compact',
+    }), IMPORTANT_PROMPTS.characterAi.compact);
 });
 
 test('손상되거나 구버전인 선택값은 안전한 기본값으로 보정한다', () => {
@@ -56,4 +66,3 @@ test('손상되거나 구버전인 선택값은 안전한 기본값으로 보정
     assert.equal(settings.characterAiPromptEnabled, false);
     assert.equal(settings.characterAiPromptVersion, 'full');
 });
-
