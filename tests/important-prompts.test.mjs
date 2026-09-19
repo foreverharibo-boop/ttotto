@@ -12,11 +12,11 @@ import {
 test('중요 프롬프트는 JSON의 다섯 자연어 본문만 버전별로 보관한다', () => {
     assert.deepEqual(Object.keys(IMPORTANT_PROMPTS.metagaming), ['full', 'mini']);
     assert.deepEqual(Object.keys(IMPORTANT_PROMPTS.characterAi), ['full', 'compact', 'mini']);
-    assert.equal(IMPORTANT_PROMPTS.metagaming.full.length, 2639);
-    assert.equal(IMPORTANT_PROMPTS.metagaming.mini.length, 2195);
-    assert.equal(IMPORTANT_PROMPTS.characterAi.full.length, 5299);
-    assert.equal(IMPORTANT_PROMPTS.characterAi.compact.length, 4619);
-    assert.equal(IMPORTANT_PROMPTS.characterAi.mini.length, 3303);
+    assert.equal(IMPORTANT_PROMPTS.metagaming.full.length, 2638);
+    assert.equal(IMPORTANT_PROMPTS.metagaming.mini.length, 2193);
+    assert.equal(IMPORTANT_PROMPTS.characterAi.full.length, 5297);
+    assert.equal(IMPORTANT_PROMPTS.characterAi.compact.length, 4617);
+    assert.equal(IMPORTANT_PROMPTS.characterAi.mini.length, 3301);
     assert.match(IMPORTANT_PROMPTS.metagaming.full, /<ANTI_METAGAMING>/);
     assert.match(IMPORTANT_PROMPTS.characterAi.full, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
 });
@@ -34,6 +34,10 @@ test('다섯 프롬프트는 모두 여는 태그와 닫는 태그를 정확히 
             assert.equal(content.trimEnd().endsWith(closing), true, `${tag} ${version}: 닫는 태그`);
             assert.equal(content.split(opening).length - 1, 1, `${tag} ${version}: 여는 태그 개수`);
             assert.equal(content.split(closing).length - 1, 1, `${tag} ${version}: 닫는 태그 개수`);
+            assert.doesNotMatch(content, new RegExp(`^<${tag}>\\n\\n`), `${tag} ${version}: 여는 태그 아래 빈 줄 없음`);
+            assert.doesNotMatch(content, new RegExp(`\\n\\n</${tag}>$`), `${tag} ${version}: 닫는 태그 위 빈 줄 없음`);
+            assert.match(content, new RegExp(`^<${tag}>\\n[^\\n]`), `${tag} ${version}: 여는 태그 바로 다음 자연어`);
+            assert.match(content, new RegExp(`[^\\n]\\n</${tag}>$`), `${tag} ${version}: 마지막 자연어 바로 다음 닫는 태그`);
         }
     }
 });
