@@ -16,9 +16,26 @@ test('중요 프롬프트는 JSON의 다섯 자연어 본문만 버전별로 보
     assert.equal(IMPORTANT_PROMPTS.metagaming.mini.length, 2195);
     assert.equal(IMPORTANT_PROMPTS.characterAi.full.length, 5299);
     assert.equal(IMPORTANT_PROMPTS.characterAi.compact.length, 4619);
-    assert.equal(IMPORTANT_PROMPTS.characterAi.mini.length, 3267);
+    assert.equal(IMPORTANT_PROMPTS.characterAi.mini.length, 3303);
     assert.match(IMPORTANT_PROMPTS.metagaming.full, /<ANTI_METAGAMING>/);
     assert.match(IMPORTANT_PROMPTS.characterAi.full, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+});
+
+test('다섯 프롬프트는 모두 여는 태그와 닫는 태그를 정확히 한 쌍 보존한다', () => {
+    const families = [
+        [IMPORTANT_PROMPTS.metagaming, 'ANTI_METAGAMING'],
+        [IMPORTANT_PROMPTS.characterAi, 'CHARACTER_KNOWLEDGE_AND_CONTEXT'],
+    ];
+    for (const [versions, tag] of families) {
+        const opening = `<${tag}>`;
+        const closing = `</${tag}>`;
+        for (const [version, content] of Object.entries(versions)) {
+            assert.equal(content.startsWith(opening), true, `${tag} ${version}: 여는 태그`);
+            assert.equal(content.trimEnd().endsWith(closing), true, `${tag} ${version}: 닫는 태그`);
+            assert.equal(content.split(opening).length - 1, 1, `${tag} ${version}: 여는 태그 개수`);
+            assert.equal(content.split(closing).length - 1, 1, `${tag} ${version}: 닫는 태그 개수`);
+        }
+    }
 });
 
 test('체크된 계열에서 선택한 버전 하나만 주입한다', () => {
