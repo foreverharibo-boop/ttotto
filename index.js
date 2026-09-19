@@ -22,7 +22,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.9.4';
+const EXTENSION_VERSION = '1.10.0';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -31,6 +31,12 @@ const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'cont
 const PROMPT_POSITION_IN_CHAT = 1;
 const PROMPT_ROLE_SYSTEM = 0;
 const IMPORTANT_PROMPT_DEPTH = 4;
+const PROMPT_ORDER_KEYS = Object.freeze(['ban', 'echo', 'weave']);
+const PROMPT_ORDER_LABELS = Object.freeze({
+    weave: 'WEAVE 프롬프트',
+    ban: '또또 금지어',
+    echo: '또또 에코 방지',
+});
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -45,6 +51,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     metagamingPromptVersion: 'full',
     characterAiPromptEnabled: false,
     characterAiPromptVersion: 'full',
+    promptOrder: PROMPT_ORDER_KEYS,
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -94,6 +101,18 @@ function getContext() {
 
 function getEventTypes(context = getContext()) {
     return context.eventTypes ?? context.event_types ?? {};
+}
+
+export function normalizePromptOrder(order) {
+    const normalized = [];
+    for (const value of Array.isArray(order) ? order : []) {
+        const key = String(value ?? '');
+        if (PROMPT_ORDER_KEYS.includes(key) && !normalized.includes(key)) normalized.push(key);
+    }
+    for (const key of PROMPT_ORDER_KEYS) {
+        if (!normalized.includes(key)) normalized.push(key);
+    }
+    return normalized;
 }
 
 function getSettings() {
@@ -168,6 +187,7 @@ function getSettings() {
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     normalizeImportantPromptSettings(settings);
+    settings.promptOrder = normalizePromptOrder(settings.promptOrder);
     settings.dragBanMenuEnabled = settings.dragBanMenuEnabled !== false;
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
@@ -1425,7 +1445,7 @@ function latestUserSourceText(promptChat, contextChat) {
     return '';
 }
 
-export function buildGenerationInjection(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
+function buildGenerationInjectionSections(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
     const type = String(generationType ?? '').toLocaleLowerCase();
     const echoApplies = Boolean(settings?.echoPreventionEnabled)
         && type !== 'continue'
@@ -1434,17 +1454,34 @@ export function buildGenerationInjection(analysisPrompt, settings, generationTyp
     const temporaryEchoPhrases = echoApplies
         ? extractEchoPhrases(latestUserSourceText(promptChat, contextChat), settings, strongEcho ? 8 : 4)
         : [];
-    return [
-        String(analysisPrompt ?? '').trim(),
-        echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases, strongEcho) : '',
-    ].filter(Boolean).join('\n\n');
+    return {
+        ban: String(analysisPrompt ?? '').trim(),
+        echo: echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases, strongEcho) : '',
+    };
+}
+
+export function buildGenerationInjection(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
+    const { ban, echo } = buildGenerationInjectionSections(analysisPrompt, settings, generationType, promptChat, contextChat);
+    return [ban, echo].filter(Boolean).join('\n\n');
 }
 
 export function buildCompleteGenerationInjection(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
-    return [
-        buildImportantPromptInjection(settings),
-        buildGenerationInjection(analysisPrompt, settings, generationType, promptChat, contextChat),
-    ].filter(Boolean).join('\n\n');
+    const { ban, echo } = buildGenerationInjectionSections(
+        analysisPrompt,
+        settings,
+        generationType,
+        promptChat,
+        contextChat,
+    );
+    const sections = {
+        weave: buildImportantPromptInjection(settings),
+        ban,
+        echo,
+    };
+    return normalizePromptOrder(settings?.promptOrder)
+        .map((key) => sections[key])
+        .filter(Boolean)
+        .join('\n\n');
 }
 
 globalThis.ttottoGenerationInterceptor = async function ttottoGenerationInterceptor(_chat, _contextSize, _abort, type) {
@@ -2218,6 +2255,62 @@ function updatePromptMetrics(prompt) {
     });
 }
 
+function movePromptOrderItem(key, direction) {
+    const settings = getSettings();
+    const order = normalizePromptOrder(settings.promptOrder);
+    const fromIndex = order.indexOf(key);
+    const toIndex = fromIndex + direction;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= order.length) return;
+    [order[fromIndex], order[toIndex]] = [order[toIndex], order[fromIndex]];
+    settings.promptOrder = order;
+    saveSettings();
+    clearInjectedPrompt();
+    updateUi();
+}
+
+function renderPromptOrder(settings = getSettings()) {
+    const list = document.getElementById('ttotto-prompt-order-list');
+    if (!list) return;
+    const order = normalizePromptOrder(settings.promptOrder);
+    list.replaceChildren();
+    order.forEach((key, index) => {
+        const row = document.createElement('div');
+        row.className = 'ttotto-prompt-order-row';
+
+        const position = document.createElement('span');
+        position.className = 'ttotto-prompt-order-position';
+        position.textContent = String(index + 1);
+        position.setAttribute('aria-hidden', 'true');
+
+        const label = document.createElement('span');
+        label.className = 'ttotto-prompt-order-label';
+        label.textContent = PROMPT_ORDER_LABELS[key];
+
+        const actions = document.createElement('span');
+        actions.className = 'ttotto-prompt-order-actions';
+
+        const up = document.createElement('button');
+        up.type = 'button';
+        up.className = 'menu_button';
+        up.textContent = '↑';
+        up.disabled = index === 0;
+        up.setAttribute('aria-label', `${PROMPT_ORDER_LABELS[key]} 위로 이동`);
+        up.addEventListener('click', () => movePromptOrderItem(key, -1));
+
+        const down = document.createElement('button');
+        down.type = 'button';
+        down.className = 'menu_button';
+        down.textContent = '↓';
+        down.disabled = index === order.length - 1;
+        down.setAttribute('aria-label', `${PROMPT_ORDER_LABELS[key]} 아래로 이동`);
+        down.addEventListener('click', () => movePromptOrderItem(key, 1));
+
+        actions.append(up, down);
+        row.append(position, label, actions);
+        list.append(row);
+    });
+}
+
 function updateUi(analysisOverride = null) {
     if (!uiReady) return;
     const settings = getSettings();
@@ -2254,6 +2347,7 @@ function updateUi(analysisOverride = null) {
         characterAiVersion.value = settings.characterAiPromptVersion;
         characterAiVersion.disabled = !settings.characterAiPromptEnabled;
     }
+    renderPromptOrder(settings);
     const dragBanMenuCheckbox = document.getElementById('ttotto-drag-ban-menu-enabled');
     if (dragBanMenuCheckbox) dragBanMenuCheckbox.checked = Boolean(settings.dragBanMenuEnabled);
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');

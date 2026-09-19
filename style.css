@@ -397,6 +397,63 @@
   line-height: 1.35;
 }
 
+#ttotto-settings .ttotto-prompt-order-section {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px 0;
+}
+
+#ttotto-settings .ttotto-prompt-order-section > small {
+  opacity: 0.72;
+  font-size: 0.84em;
+  line-height: 1.35;
+}
+
+#ttotto-settings .ttotto-prompt-order-list {
+  display: grid;
+  margin-top: 4px;
+}
+
+#ttotto-settings .ttotto-prompt-order-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+#ttotto-settings .ttotto-prompt-order-position {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 0.82em;
+  font-weight: 700;
+}
+
+#ttotto-settings .ttotto-prompt-order-label {
+  min-width: 0;
+  font-weight: 600;
+}
+
+#ttotto-settings .ttotto-prompt-order-actions {
+  display: flex;
+  gap: 5px;
+}
+
+#ttotto-settings .ttotto-prompt-order-actions .menu_button {
+  width: 36px;
+  min-width: 36px;
+  height: 34px;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+}
+
 #ttotto-settings #ttotto-custom-exclusions {
   margin-top: 8px;
   padding-top: 8px;

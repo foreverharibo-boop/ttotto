@@ -360,7 +360,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
-test('WEAVE 두 항목은 금지어와 에코보다 위에 고정된 순서로 함께 주입한다', async () => {
+test('WEAVE·금지어·에코는 한 depth 0 주입문 안에서 설정한 모든 순서를 따른다', async () => {
     const promptCalls = [];
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -386,7 +386,7 @@ test('WEAVE 두 항목은 금지어와 에코보다 위에 고정된 순서로 �
     };
     globalThis.SillyTavern = { getContext: () => context };
     globalThis.toastr = { info() {}, success() {}, error() {} };
-    await import(`../index.js?important-prompt=${Date.now()}`);
+    const module = await import(`../index.js?important-prompt=${Date.now()}`);
 
     await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
     const active = promptCalls.filter((call) => call[1]);
@@ -400,11 +400,48 @@ test('WEAVE 두 항목은 금지어와 에코보다 위에 고정된 순서로 �
     const characterIndex = injected.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>');
     const banIndex = injected.indexOf('<ttotto_anti_repetition>');
     const echoIndex = injected.indexOf('<ttotto_anti_echo>');
-    assert.ok(metaIndex >= 0);
-    assert.ok(characterIndex > metaIndex);
-    assert.ok(banIndex > characterIndex);
+    assert.ok(banIndex >= 0);
     assert.ok(echoIndex > banIndex);
+    assert.ok(metaIndex > echoIndex);
+    assert.ok(characterIndex > metaIndex);
     assert.match(injected, /A genius is not omniscient/);
+
+    const permutations = [
+        ['weave', 'ban', 'echo'],
+        ['weave', 'echo', 'ban'],
+        ['ban', 'weave', 'echo'],
+        ['ban', 'echo', 'weave'],
+        ['echo', 'weave', 'ban'],
+        ['echo', 'ban', 'weave'],
+    ];
+    for (const promptOrder of permutations) {
+        const assembled = module.buildCompleteGenerationInjection(
+            '<BAN_MARKER>forbidden</BAN_MARKER>',
+            {
+                echoPreventionEnabled: true,
+                metagamingPromptEnabled: true,
+                metagamingPromptVersion: 'mini',
+                characterAiPromptEnabled: true,
+                characterAiPromptVersion: 'compact',
+                promptOrder,
+            },
+            'normal',
+            context.chat,
+            context.chat,
+        );
+        const positions = {
+            weave: assembled.indexOf('<ANTI_METAGAMING>'),
+            ban: assembled.indexOf('<BAN_MARKER>'),
+            echo: assembled.indexOf('<ttotto_anti_echo>'),
+        };
+        assert.ok(Object.values(positions).every((position) => position >= 0));
+        assert.deepEqual(
+            [...promptOrder].sort((left, right) => positions[left] - positions[right]),
+            promptOrder,
+            `주입 순서: ${promptOrder.join(' → ')}`,
+        );
+    }
+    assert.deepEqual(module.normalizePromptOrder(['echo', 'echo', 'unknown']), ['echo', 'ban', 'weave']);
 
     promptCalls.length = 0;
     context.extensionSettings.ttotto.metagamingPromptEnabled = false;

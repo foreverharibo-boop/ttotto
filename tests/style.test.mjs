@@ -111,6 +111,23 @@ test('WEAVE 프롬프트는 체크박스-이름-버전 선택과 짧은 설명�
     assert.match(js, /bindSetting\('ttotto-character-ai-prompt-version',\s*'characterAiPromptVersion',\s*String\)/);
 });
 
+test('WEAVE·금지어·에코 주입 순서는 모바일용 위아래 버튼으로 바꿀 수 있다', async () => {
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(html, /id="ttotto-prompt-order-title">주입 순서</);
+    assert.match(html, /같은 depth 0 시스템 주입문/);
+    assert.match(html, /id="ttotto-prompt-order-list"/);
+    assert.match(js, /weave:\s*'WEAVE 프롬프트'/);
+    assert.match(js, /ban:\s*'또또 금지어'/);
+    assert.match(js, /echo:\s*'또또 에코 방지'/);
+    assert.match(js, /function movePromptOrderItem\(key, direction\)/);
+    assert.match(js, /up\.textContent = '↑'/);
+    assert.match(js, /down\.textContent = '↓'/);
+    assert.match(js, /renderPromptOrder\(settings\)/);
+    assert.match(css, /\.ttotto-prompt-order-row \{[\s\S]*?grid-template-columns:\s*28px\s+minmax\(0,\s*1fr\)\s+auto/);
+});
+
 test('드래그 표현·구조 메뉴는 설정에서 켜고 끌 수 있다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
