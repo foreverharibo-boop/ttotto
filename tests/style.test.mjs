@@ -92,6 +92,21 @@ test('금지어들 방지 강화 모드는 금지어와 구조 전체를 대상�
     assert.doesNotMatch(await readFile(new URL('../detector.js', import.meta.url), 'utf8'), /source === 'pinned'\)\.slice\(0,\s*30\)/);
 });
 
+test('중요 프롬프트는 체크박스-이름-버전 선택 순서로 제공된다', async () => {
+    const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(html, /ttotto-metagaming-prompt-enabled[\s\S]*?메타게이밍 방지[\s\S]*?ttotto-metagaming-prompt-version/);
+    assert.match(html, /ttotto-character-ai-prompt-enabled[\s\S]*?캐릭터 AI화 방지[\s\S]*?ttotto-character-ai-prompt-version/);
+    assert.match(html, /ttotto-metagaming-prompt-version[\s\S]*?원본[\s\S]*?초축약/);
+    assert.match(html, /ttotto-character-ai-prompt-version[\s\S]*?원본[\s\S]*?축약[\s\S]*?초축약/);
+    assert.match(css, /\.ttotto-important-prompt-row \{[\s\S]*?grid-template-columns:\s*18px\s+minmax\(0,\s*1fr\)/);
+    assert.match(js, /metagamingVersion\.disabled = !settings\.metagamingPromptEnabled/);
+    assert.match(js, /characterAiVersion\.disabled = !settings\.characterAiPromptEnabled/);
+    assert.match(js, /bindSetting\('ttotto-metagaming-prompt-enabled',\s*'metagamingPromptEnabled',\s*Boolean\)/);
+    assert.match(js, /bindSetting\('ttotto-character-ai-prompt-version',\s*'characterAiPromptVersion',\s*String\)/);
+});
+
 test('드래그 표현·구조 메뉴는 설정에서 켜고 끌 수 있다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');

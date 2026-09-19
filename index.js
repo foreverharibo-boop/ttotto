@@ -9,13 +9,18 @@ import {
     splitDialogueAndNarration,
     stripNonProse,
 } from './detector.js';
+import {
+    buildImportantPromptInjection,
+    normalizeImportantPromptSettings,
+} from './important-prompts.js';
 
 const MODULE_NAME = 'ttotto';
 const EXTENSION_PATH = 'third-party/ttotto';
 const PROMPT_KEY = 'ttotto_anti_repetition';
+const IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.8.23';
+const EXTENSION_VERSION = '1.9.0';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -23,6 +28,7 @@ const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'cont
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
 const PROMPT_POSITION_IN_CHAT = 1;
 const PROMPT_ROLE_SYSTEM = 0;
+const IMPORTANT_PROMPT_DEPTH = 4;
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -33,6 +39,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     echoPreventionEnabled: true,
     echoPreventionStrong: false,
     banPreventionStrong: false,
+    metagamingPromptEnabled: false,
+    metagamingPromptVersion: 'full',
+    characterAiPromptEnabled: false,
+    characterAiPromptVersion: 'full',
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -155,6 +165,7 @@ function getSettings() {
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
+    normalizeImportantPromptSettings(settings);
     settings.dragBanMenuEnabled = settings.dragBanMenuEnabled !== false;
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
@@ -1366,17 +1377,19 @@ function invalidateAnalysis() {
 }
 
 function clearInjectedPrompt() {
-    try {
-        getContext().setExtensionPrompt(
-            PROMPT_KEY,
-            '',
-            PROMPT_POSITION_IN_CHAT,
-            0,
-            false,
-            PROMPT_ROLE_SYSTEM,
-        );
-    } catch (error) {
-        console.debug(`${LOG_PREFIX} 주입문 초기화 생략`, error);
+    for (const [key, depth] of [[PROMPT_KEY, 0], [IMPORTANT_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH]]) {
+        try {
+            getContext().setExtensionPrompt(
+                key,
+                '',
+                PROMPT_POSITION_IN_CHAT,
+                depth,
+                false,
+                PROMPT_ROLE_SYSTEM,
+            );
+        } catch (error) {
+            console.debug(`${LOG_PREFIX} 주입문 초기화 생략`, error);
+        }
     }
 }
 
@@ -1438,17 +1451,31 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const recentMessages = collectAssistantMessages();
         const analysis = analyzeCurrentChat(false, recentMessages);
         const prompt = buildGenerationInjection(analysis.prompt, settings, type, _chat, getContext().chat);
-        if (!prompt) return;
-        getContext().setExtensionPrompt(
-            PROMPT_KEY,
-            prompt,
-            PROMPT_POSITION_IN_CHAT,
-            0,
-            false,
-            PROMPT_ROLE_SYSTEM,
-        );
+        const importantPrompt = buildImportantPromptInjection(settings);
+        if (!prompt && !importantPrompt) return;
+        if (importantPrompt) {
+            getContext().setExtensionPrompt(
+                IMPORTANT_PROMPT_KEY,
+                importantPrompt,
+                PROMPT_POSITION_IN_CHAT,
+                IMPORTANT_PROMPT_DEPTH,
+                false,
+                PROMPT_ROLE_SYSTEM,
+            );
+        }
+        if (prompt) {
+            getContext().setExtensionPrompt(
+                PROMPT_KEY,
+                prompt,
+                PROMPT_POSITION_IN_CHAT,
+                0,
+                false,
+                PROMPT_ROLE_SYSTEM,
+            );
+        }
         const echoLabel = prompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
-        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel} 주입`);
+        const importantLabel = importantPrompt ? ' + 중요 프롬프트' : '';
+        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${importantLabel} 주입`);
     } catch (error) {
         clearInjectedPrompt();
         console.error(`${LOG_PREFIX} 생성 전 주입 실패 — 본 채팅 생성은 계속합니다.`, error);
@@ -2207,6 +2234,20 @@ function updateUi(analysisOverride = null) {
     }
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
+    const metagamingCheckbox = document.getElementById('ttotto-metagaming-prompt-enabled');
+    const metagamingVersion = document.getElementById('ttotto-metagaming-prompt-version');
+    if (metagamingCheckbox) metagamingCheckbox.checked = Boolean(settings.metagamingPromptEnabled);
+    if (metagamingVersion) {
+        metagamingVersion.value = settings.metagamingPromptVersion;
+        metagamingVersion.disabled = !settings.metagamingPromptEnabled;
+    }
+    const characterAiCheckbox = document.getElementById('ttotto-character-ai-prompt-enabled');
+    const characterAiVersion = document.getElementById('ttotto-character-ai-prompt-version');
+    if (characterAiCheckbox) characterAiCheckbox.checked = Boolean(settings.characterAiPromptEnabled);
+    if (characterAiVersion) {
+        characterAiVersion.value = settings.characterAiPromptVersion;
+        characterAiVersion.disabled = !settings.characterAiPromptEnabled;
+    }
     const dragBanMenuCheckbox = document.getElementById('ttotto-drag-ban-menu-enabled');
     if (dragBanMenuCheckbox) dragBanMenuCheckbox.checked = Boolean(settings.dragBanMenuEnabled);
     const structureAiCheckbox = document.getElementById('ttotto-structure-ai');
@@ -2224,7 +2265,10 @@ function updateUi(analysisOverride = null) {
 
     renderPatterns(enabled ? analysis.patterns : []);
     const previewPrompt = enabled
-        ? buildGenerationInjection(analysis.prompt, settings, 'normal', null, getContext().chat)
+        ? [
+            buildImportantPromptInjection(settings),
+            buildGenerationInjection(analysis.prompt, settings, 'normal', null, getContext().chat),
+        ].filter(Boolean).join('\n\n')
         : '';
     document.getElementById('ttotto-prompt-text').textContent = previewPrompt || '현재 주입할 내용이 없어요.';
     updatePromptMetrics(previewPrompt);
@@ -2318,6 +2362,9 @@ function bindSetting(id, key, parser = (value) => value) {
             scheduleSmartAnalysis({ force: true });
         }
         if (key === 'dragBanMenuEnabled') syncDragBanHandlers(settings);
+        if (['metagamingPromptEnabled', 'metagamingPromptVersion', 'characterAiPromptEnabled', 'characterAiPromptVersion'].includes(key)) {
+            clearInjectedPrompt();
+        }
         invalidateAnalysis();
         if (!settings.enabled) clearInjectedPrompt();
         const state = settings.enabled ? getChatState() : getChatState(false);
@@ -2343,6 +2390,10 @@ function bindUi() {
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
+    bindSetting('ttotto-metagaming-prompt-enabled', 'metagamingPromptEnabled', Boolean);
+    bindSetting('ttotto-metagaming-prompt-version', 'metagamingPromptVersion', String);
+    bindSetting('ttotto-character-ai-prompt-enabled', 'characterAiPromptEnabled', Boolean);
+    bindSetting('ttotto-character-ai-prompt-version', 'characterAiPromptVersion', String);
     bindSetting('ttotto-drag-ban-menu-enabled', 'dragBanMenuEnabled', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);

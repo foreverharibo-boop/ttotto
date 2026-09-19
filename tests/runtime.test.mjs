@@ -350,8 +350,55 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(listeners.get(eventTypes.MESSAGE_UPDATED)?.size ?? 0, 0);
     const beforeDisabledCall = promptCalls.length;
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
-    assert.equal(promptCalls.length, beforeDisabledCall + 1);
+    assert.equal(promptCalls.length, beforeDisabledCall + 2);
+    assert.deepEqual(promptCalls.slice(-2).map((call) => call[0]), [
+        'ttotto_anti_repetition',
+        'ttotto_important_prompts',
+    ]);
     assert.equal(promptCalls.at(-1)[1], '');
+});
+
+test('중요 프롬프트는 체크된 버전만 별도 시스템 프롬프트로 깊이 4에 주입한다', async () => {
+    const promptCalls = [];
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {
+            ttotto: {
+                enabled: true,
+                echoPreventionEnabled: false,
+                metagamingPromptEnabled: true,
+                metagamingPromptVersion: 'mini',
+                characterAiPromptEnabled: true,
+                characterAiPromptVersion: 'compact',
+            },
+        },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'important-prompt-test', groupId: null, characterId: 0,
+        characters: [], groups: [], chat: [],
+        setExtensionPrompt(...args) { promptCalls.push(args); },
+        saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    await import(`../index.js?important-prompt=${Date.now()}`);
+
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    const active = promptCalls.filter((call) => call[1]);
+    assert.equal(active.length, 1);
+    assert.equal(active[0][0], 'ttotto_important_prompts');
+    assert.equal(active[0][2], 1);
+    assert.equal(active[0][3], 4);
+    assert.equal(active[0][5], 0);
+    assert.match(active[0][1], /<ANTI_METAGAMING>/);
+    assert.match(active[0][1], /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.match(active[0][1], /A genius is not omniscient/);
+
+    promptCalls.length = 0;
+    context.extensionSettings.ttotto.metagamingPromptEnabled = false;
+    context.extensionSettings.ttotto.characterAiPromptEnabled = false;
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.equal(promptCalls.filter((call) => call[1]).length, 0);
 });
 
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
