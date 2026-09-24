@@ -46,8 +46,8 @@ test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async ()
 test('금지 추가 UI와 캐릭터별·전역 삭제 버튼을 명확히 구분한다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
-    assert.match(css, /#ttotto-settings \.ttotto-ban-compose \{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(120px,\s*1fr\)\)/);
-    assert.match(css, /#ttotto-settings \.ttotto-ban-compose-three \{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(120px,\s*1fr\)\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose \{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-ban-compose-three \{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
     assert.match(await readFile(new URL('../settings.html', import.meta.url), 'utf8'), /class="ttotto-ban-compose ttotto-ban-compose-three"/);
     assert.match(css, /#ttotto-settings \.ttotto-pattern-side \{[\s\S]*?flex-direction:\s*column[\s\S]*?align-items:\s*flex-end/);
     assert.match(css, /#ttotto-settings \.ttotto-pattern-unpin \{[\s\S]*?min-height:\s*1\.7em[\s\S]*?font-size:\s*0\.82em/);
@@ -61,11 +61,21 @@ test('금지 추가 UI와 캐릭터별·전역 삭제 버튼을 명확히 구분
     assert.match(js, /pattern\.kind === 'permanent-term'[\s\S]*?removeGlobalBan\(pattern\.example\)[\s\S]*?removeGlobalStructureBan\(pattern\.instruction\)/);
 });
 
-test('드래그 보조 AI 설명은 선택칸 아래 전체 너비의 한 줄이다', async () => {
+test('드래그 보조 AI 설명은 선택칸 아래 전체 너비에서 안전하게 줄바꿈된다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
-    assert.match(css, /#ttotto-settings \.ttotto-field > small \{[\s\S]*?grid-column:\s*1\s*\/\s*-1[\s\S]*?white-space:\s*nowrap/);
+    assert.match(css, /#ttotto-settings \.ttotto-field > small \{[\s\S]*?grid-column:\s*1\s*\/\s*-1[\s\S]*?white-space:\s*normal[\s\S]*?overflow-wrap:\s*anywhere/);
     assert.match(html, /구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요\./);
+});
+
+test('좁은 폰 팝업은 가로 넘침 없이 세로 방향으로만 스크롤한다', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(css, /#ttotto-settings \{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%[\s\S]*?overflow-x:\s*hidden[\s\S]*?overflow-x:\s*clip/);
+    assert.match(css, /\.ttotto-popup-body \{[\s\S]*?overflow-x:\s*hidden/);
+    assert.match(css, /#ttotto-settings \.ttotto-field \{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*46%\)/);
+    assert.match(js, /'width:100% !important',\s*'max-width:100% !important'/);
+    assert.match(js, /body\.style\.cssText = '[^']*overflow-y:auto !important;[^']*overflow-x:hidden !important;[^']*touch-action:pan-y !important;/);
 });
 
 test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제공된다', async () => {
