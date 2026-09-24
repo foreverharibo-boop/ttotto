@@ -68,13 +68,14 @@ test('드래그 보조 AI 설명은 선택칸 아래 전체 너비에서 안전�
     assert.match(html, /구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요\./);
 });
 
-test('좁은 폰 팝업은 가로 넘침 없이 세로 방향으로만 스크롤한다', async () => {
+test('좁은 폰에서는 팝업 내부만 세로 스크롤하고 바깥 오버레이 배치는 보존한다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
-    assert.match(css, /#ttotto-settings \{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%[\s\S]*?overflow-x:\s*hidden[\s\S]*?overflow-x:\s*clip/);
-    assert.match(css, /\.ttotto-popup-body \{[\s\S]*?overflow-x:\s*hidden/);
+    assert.match(css, /#ttotto-settings \{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%[\s\S]*?overflow-x:\s*hidden/);
+    assert.match(css, /\.ttotto-popup-body \{[\s\S]*?overflow-x:\s*hidden[\s\S]*?touch-action:\s*pan-y/);
     assert.match(css, /#ttotto-settings \.ttotto-field \{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*46%\)/);
-    assert.match(js, /'width:100% !important',\s*'max-width:100% !important'/);
+    assert.match(js, /'width:100vw !important',\s*'height:100vh !important'/);
+    assert.doesNotMatch(js, /TTOTTO_OVERLAY_BASE_CSS[\s\S]{0,500}touch-action/);
     assert.match(js, /body\.style\.cssText = '[^']*overflow-y:auto !important;[^']*overflow-x:hidden !important;[^']*touch-action:pan-y !important;/);
 });
 

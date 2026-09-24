@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.11.2';
+const EXTENSION_VERSION = '1.11.3';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -3197,20 +3197,17 @@ function syncDragBanHandlers(settings = getSettings()) {
 
 const TTOTTO_OVERLAY_BASE_CSS = [
     'position:fixed !important', 'top:0 !important', 'left:0 !important', 'right:0 !important',
-    'bottom:0 !important', 'width:100% !important', 'max-width:100% !important', 'height:100% !important', 'margin:0 !important',
+    'bottom:0 !important', 'width:100vw !important', 'height:100vh !important', 'margin:0 !important',
     'padding:16px !important', 'box-sizing:border-box !important', 'z-index:99990 !important',
     'background-color:rgba(12,12,16,0.55) !important', 'align-items:center !important',
-    'justify-content:center !important', 'overflow:hidden !important', 'overscroll-behavior:none !important',
-    'touch-action:pan-y !important', 'transform:none !important', '-webkit-transform:none !important',
+    'justify-content:center !important', 'transform:none !important', '-webkit-transform:none !important',
 ].join('; ');
 
 const TTOTTO_POPUP_BOX_CSS = [
     'width:100% !important', 'max-width:480px !important', 'max-height:88vh !important',
-    'min-width:0 !important', 'box-sizing:border-box !important',
     'display:flex !important', 'flex-direction:column !important', 'position:relative !important',
     'z-index:99991 !important', 'border-radius:14px !important', 'overflow:hidden !important',
-    'margin:0 auto !important', 'overscroll-behavior:contain !important', 'touch-action:pan-y !important',
-    'transform:none !important',
+    'margin:0 auto !important', 'transform:none !important',
     'background-color:var(--SmartThemeBlurTintColor, #1b1b22) !important',
     'color:var(--SmartThemeBodyColor, #ddd) !important',
     'border:1px solid rgba(128,128,128,0.35) !important',
@@ -3273,7 +3270,7 @@ function ttottoOpenPopup() {
     const header = box.querySelector('.ttotto-popup-header');
     if (header) header.style.cssText = 'display:flex !important; align-items:center !important; justify-content:space-between !important; gap:8px !important; padding:10px 14px !important; border-bottom:1px solid rgba(128,128,128,0.25) !important; flex-shrink:0 !important;';
     const body = document.getElementById('ttotto-popup-body');
-    if (body) body.style.cssText = 'box-sizing:border-box !important; width:100% !important; min-width:0 !important; max-width:100% !important; overflow-y:auto !important; overflow-x:hidden !important; overscroll-behavior-x:none !important; touch-action:pan-y !important; scrollbar-gutter:stable; padding:8px 14px 14px !important; -webkit-overflow-scrolling:touch;';
+    if (body) body.style.cssText = 'box-sizing:border-box !important; width:100% !important; min-width:0 !important; max-width:100% !important; overflow-y:auto !important; overflow-x:hidden !important; overscroll-behavior-x:none !important; touch-action:pan-y !important; padding:8px 14px 14px !important; -webkit-overflow-scrolling:touch;';
     popupOpen = true;
     updateUi();
 }
