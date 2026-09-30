@@ -515,6 +515,54 @@ test('최종 요청에 없는 depth 0·위치 실패 묶음만 답변 직전에 
     assert.match(messages.at(-1).content, /CHARACTER_KNOWLEDGE_AND_CONTEXT/);
 });
 
+test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 WEAVE를 보충한다', async () => {
+    const listeners = new Map();
+    const eventTypes = {
+        APP_READY: 'app_ready',
+        CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+    };
+    const context = {
+        eventTypes,
+        eventSource: {
+            on(event, handler) {
+                if (!listeners.has(event)) listeners.set(event, new Set());
+                listeners.get(event).add(handler);
+            },
+            removeListener(event, handler) { listeners.get(event)?.delete(handler); },
+        },
+        extensionSettings: {
+            ttotto: {
+                enabled: true,
+                echoPreventionEnabled: false,
+                metagamingPromptEnabled: true,
+                characterAiPromptEnabled: true,
+                weavePromptPosition: 'depth_0',
+            },
+        },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'empty-generation-type', groupId: null, characterId: 0,
+        name1: 'User', name2: 'Character', groups: [], characters: [],
+        chat: [{ is_user: true, mes: 'Continue the scene.' }],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?empty-type-final-prompt=${Date.now()}`);
+    module.onEnable();
+
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, undefined);
+    const finalMessages = [{ role: 'user', content: 'Continue the scene.' }];
+    for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_PROMPT_READY) ?? []) {
+        handler({ chat: finalMessages, dryRun: false });
+    }
+
+    const sentPrompt = finalMessages.map((message) => message.content).join('\n');
+    assert.match(sentPrompt, /<ANTI_METAGAMING>/);
+    assert.match(sentPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.ok(sentPrompt.indexOf('<ANTI_METAGAMING>') < sentPrompt.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
+    module.onDisable();
+});
+
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
     const promptCalls = [];
     const context = {

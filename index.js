@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.2';
+const EXTENSION_VERSION = '1.12.3';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1615,7 +1615,10 @@ function latestUserSourceText(promptChat, contextChat) {
 }
 
 function buildGenerationInjectionSections(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
-    const type = String(generationType ?? '').toLocaleLowerCase();
+    // SillyTavern calls an ordinary send with an empty/undefined type on some
+    // versions. Treat that as `normal`; otherwise every normal reply silently
+    // skips all of 또또's generation-time injections.
+    const type = String(generationType ?? '').trim().toLocaleLowerCase() || 'normal';
     const echoApplies = Boolean(settings?.echoPreventionEnabled)
         && type !== 'continue'
         && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
@@ -1690,7 +1693,8 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const settings = getSettings();
         const state = getChatState(false);
         if (!runtimeActive || !settings.enabled || !state?.enabled) return;
-        if (!ALLOWED_GENERATION_TYPES.has(String(type ?? '').toLocaleLowerCase())) return;
+        const generationType = String(type ?? '').trim().toLocaleLowerCase() || 'normal';
+        if (!ALLOWED_GENERATION_TYPES.has(generationType)) return;
         if (state.skipNextGeneration) {
             state.skipNextGeneration = false;
             saveChatState();
@@ -1702,7 +1706,7 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         // Recheck only the small recent window; rerun the detector only if it changed.
         const recentMessages = collectAssistantMessages();
         const analysis = analyzeCurrentChat(false, recentMessages);
-        const groups = buildPositionedGenerationInjections(analysis.prompt, settings, type, _chat, getContext().chat);
+        const groups = buildPositionedGenerationInjections(analysis.prompt, settings, generationType, _chat, getContext().chat);
         if (!groups.length) return;
         const depthZeroPrompt = groups
             .filter((group) => group.position === PROMPT_POSITION_DEPTH_ZERO)
@@ -1735,6 +1739,33 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
     }
 };
 
+function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt') {
+    if (!pendingPresetPromptGroups.length || !Array.isArray(messages)) return null;
+    const context = getContext();
+    const groups = pendingPresetPromptGroups;
+    const relativeGroups = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
+    const result = insertPresetRelativeGroups(
+        messages,
+        relativeGroups,
+        getPresetPrompts(context),
+        { charName: context?.name2, userName: context?.name1 },
+    );
+    for (const item of result.missing) {
+        console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 답변 직전으로 대체`, item);
+    }
+    const missingPositions = new Set(result.missing.map((item) => item.position));
+    const fallbackGroups = groups.filter((group) =>
+        group.position === PROMPT_POSITION_DEPTH_ZERO || missingPositions.has(group.position));
+    const appendedKeys = appendGenerationGroups(messages, fallbackGroups);
+    pendingPresetPromptGroups = [];
+    console.debug(`${LOG_PREFIX} 최종 프롬프트 주입 확인`, {
+        source,
+        preset: result.inserted,
+        depthZeroOrFallback: appendedKeys,
+    });
+    return { ...result, appendedKeys };
+}
+
 function installPresetPlacementFetchHook() {
     if (typeof globalThis.fetch !== 'function') return;
     if (globalThis.fetch.__ttottoPresetPlacementHook === true) return;
@@ -1751,30 +1782,9 @@ function installPresetPlacementFetchHook() {
                 if (!isAuxiliaryRequest) {
                     const body = JSON.parse(options.body);
                     if (Array.isArray(body?.messages)) {
-                        const context = getContext();
-                        const groups = pendingPresetPromptGroups;
-                        pendingPresetPromptGroups = [];
-                        const relativeGroups = groups
-                            .filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
-                        const result = insertPresetRelativeGroups(
-                            body.messages,
-                            relativeGroups,
-                            getPresetPrompts(context),
-                            { charName: context?.name2, userName: context?.name1 },
-                        );
-                        for (const item of result.missing) {
-                            console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 답변 직전으로 대체`, item);
-                        }
-                        const missingPositions = new Set(result.missing.map((item) => item.position));
-                        const fallbackGroups = groups.filter((group) =>
-                            group.position === PROMPT_POSITION_DEPTH_ZERO || missingPositions.has(group.position));
-                        const appendedKeys = appendGenerationGroups(body.messages, fallbackGroups);
-                        if (result.inserted.length || appendedKeys.length) {
+                        const result = applyPendingGroupsToFinalMessages(body.messages, 'fetch-fallback');
+                        if (result && (result.inserted.length || result.appendedKeys.length)) {
                             options = { ...options, body: JSON.stringify(body) };
-                            console.debug(`${LOG_PREFIX} 최종 /generate 주입 확인`, {
-                                preset: result.inserted,
-                                depthZeroOrFallback: appendedKeys,
-                            });
                         }
                     }
                 }
@@ -3701,6 +3711,12 @@ function registerEvents() {
         if (message) updateBanHitsForMessage(message);
         else reconcileOffenseEvidence();
         handleHistoryMutation();
+    });
+    // Chat Completion의 최종 messages 배열이 완성된 직후 직접 검수·보충한다.
+    // fetch 교체 여부와 무관하므로 Vertex AI를 포함한 실제 생성 요청에 확실히 반영된다.
+    listen('CHAT_COMPLETION_PROMPT_READY', (payload) => {
+        if (payload?.dryRun) return;
+        applyPendingGroupsToFinalMessages(payload?.chat, 'chat-completion-ready');
     });
     listen('GENERATION_ENDED', clearInjectedPrompt);
     listen('GENERATION_STOPPED', clearInjectedPrompt);
