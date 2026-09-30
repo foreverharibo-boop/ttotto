@@ -454,8 +454,17 @@
 }
 
 #ttotto-settings #ttotto-refresh-preset-prompts {
-  justify-self: end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: stretch;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
   margin-top: 2px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
 }
 
 #ttotto-settings .ttotto-prompt-order-section {

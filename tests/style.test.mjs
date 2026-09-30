@@ -140,6 +140,7 @@ test('금지어·에코·WEAVE의 위치와 같은 위치 안의 순서를 각�
     assert.match(js, /down\.textContent = '↓'/);
     assert.match(js, /renderPromptOrder\(settings\)/);
     assert.match(css, /\.ttotto-prompt-order-row \{[\s\S]*?grid-template-columns:\s*28px\s+minmax\(0,\s*1fr\)\s+auto/);
+    assert.match(css, /#ttotto-settings #ttotto-refresh-preset-prompts \{[\s\S]*?width:\s*100%[\s\S]*?white-space:\s*nowrap[\s\S]*?writing-mode:\s*horizontal-tb/);
 });
 
 test('드래그 표현·구조 메뉴는 설정에서 켜고 끌 수 있다', async () => {
