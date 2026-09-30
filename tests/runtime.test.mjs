@@ -562,12 +562,12 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     assert.match(settingsOnlyPrompt, /<ANTI_METAGAMING>/);
     assert.match(settingsOnlyPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
 
-    // 반대로 최종 이벤트가 없는 환경에서는 interceptor 채팅 배열 직접 삽입이 안전망이 된다.
+    // Interceptor must not insert synthetic assistant messages into the chat array.
     const interceptorChat = [{ is_user: true, mes: 'Continue the scene.' }];
     await globalThis.ttottoGenerationInterceptor(interceptorChat, 0, () => {}, undefined);
     const interceptorPrompt = interceptorChat.map((message) => message.mes ?? '').join('\n');
-    assert.match(interceptorPrompt, /<ANTI_METAGAMING>/);
-    assert.match(interceptorPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.doesNotMatch(interceptorPrompt, /<ANTI_METAGAMING>/);
+    assert.doesNotMatch(interceptorPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
     const finalMessages = [{ role: 'user', content: 'Continue the scene.' }];
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_PROMPT_READY) ?? []) {
         handler({ chat: finalMessages, dryRun: false });
@@ -583,6 +583,94 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     assert.equal((sentPrompt.match(/<CHARACTER_KNOWLEDGE_AND_CONTEXT>/g) ?? []).length, 1);
     assert.ok(sentPrompt.indexOf('<ANTI_METAGAMING>') < sentPrompt.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
     module.onDisable();
+});
+
+test('보조 quiet 생성은 본 생성의 WEAVE를 소비하지 않고 실제 normal 전송에만 태그가 남는다', async () => {
+    const listeners = new Map();
+    const events = {
+        APP_READY: 'app_ready', GENERATION_STARTED: 'generation_started',
+        CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+        CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
+    };
+    const promptCalls = [];
+    const requests = [];
+    const context = {
+        eventTypes: events,
+        eventSource: {
+            on(event, handler) { listeners.set(event, handler); },
+            removeListener(event) { listeners.delete(event); },
+        },
+        extensionSettings: { ttotto: {
+            enabled: true, echoPreventionEnabled: false,
+            metagamingPromptEnabled: true, characterAiPromptEnabled: true,
+            weavePromptPosition: 'preset_after_target',
+        } },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'nested-auxiliary', characterId: 0, characters: [], groups: [],
+        chat: [{ is_user: true, mes: 'Main scene turn.' }],
+        oaiSettings: {
+            prompts: [{ identifier: 'target', content: 'Preset target instruction.' }],
+            prompt_order: [{ character_id: 100001, order: [{ identifier: 'target', enabled: true }] }],
+        },
+        setExtensionPrompt(...args) { promptCalls.push(args); },
+        saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+        requests.push(JSON.parse(options.body));
+        return { ok: true };
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?nested-auxiliary=${Date.now()}`);
+    module.onEnable();
+    try {
+        await globalThis.ttottoGenerationInterceptor([...context.chat], 0, () => {}, 'normal');
+        // generateRaw emits PROMPT_READY without GENERATION_STARTED or an interceptor.
+        const auxiliary = { type: 'quiet', messages: [{ role: 'user', content: 'Analyze state only.' }] };
+        listeners.get(events.CHAT_COMPLETION_PROMPT_READY)?.({ chat: auxiliary.messages, dryRun: false });
+        assert.equal(auxiliary.messages.length, 1, '보조 raw 프롬프트에는 본채팅 지시문을 넣으면 안 됨');
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(auxiliary);
+        await globalThis.fetch('/api/backends/chat-completions/generate', {
+            method: 'POST', body: JSON.stringify(auxiliary),
+        });
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        // quiet Generate invokes the interceptor too: it must not erase the main plan.
+        const beforeQuiet = promptCalls.length;
+        await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'quiet');
+        assert.equal(promptCalls.length, beforeQuiet);
+        listeners.get(events.GENERATION_STARTED)('quiet', {}, false);
+        listeners.get(events.GENERATION_STARTED)('normal', {}, true); // dry-run must not erase it either
+        const main = { type: 'normal', messages: [
+            { role: 'system', content: 'Preset target instruction.' },
+            { role: 'user', content: 'Main scene turn.' },
+        ] };
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main);
+        assert.match(main.messages[1].content, /<ANTI_METAGAMING>/);
+        // A later extension may replace the serialized messages: the fetch guard restores them.
+        main.messages = main.messages.filter((message) => !message.content.includes('<ANTI_METAGAMING>'));
+        await globalThis.fetch('/api/backends/chat-completions/generate', {
+            method: 'POST', body: JSON.stringify(main),
+        });
+        const sent = JSON.stringify(requests.at(-1));
+        assert.equal((sent.match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+        assert.equal((sent.match(/<CHARACTER_KNOWLEDGE_AND_CONTEXT>/g) ?? []).length, 1);
+        assert.match(requests.at(-1).messages[1].content, /<ANTI_METAGAMING>/);
+        assert.equal(requests.at(-1).messages[2].role, 'user');
+
+        // Skip-once must not be undone by the independent final-payload fallback.
+        context.chatMetadata.ttotto.skipNextGeneration = true;
+        await globalThis.ttottoGenerationInterceptor([...context.chat], 0, () => {}, 'normal');
+        const skipped = { type: 'normal', messages: [{ role: 'user', content: 'Skipped turn.' }] };
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(skipped);
+        await globalThis.fetch('/api/backends/chat-completions/generate', {
+            method: 'POST', body: JSON.stringify(skipped),
+        });
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+    } finally {
+        module.onDisable();
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
