@@ -14,6 +14,10 @@ import {
     buildMetagamingPromptInjection,
     normalizeImportantPromptSettings,
 } from './important-prompts.js';
+import { hasHookOwner, markHookOwner } from './hook-chain.js';
+
+const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
+const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
 
 const MODULE_NAME = 'ttotto';
 const EXTENSION_PATH = 'third-party/ttotto';
@@ -23,7 +27,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.7';
+const EXTENSION_VERSION = '1.12.8';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -144,7 +148,7 @@ async function loadPresetPromptApi() {
 // This includes nontrivial macros and character-specific main/jailbreak overrides.
 export function installPresetPromptCapture(manager) {
     if (!manager || typeof manager.preparePrompt !== 'function'
-        || manager.preparePrompt.__ttottoCapture) return;
+        || hasHookOwner(manager.preparePrompt, PROMPT_CAPTURE_OWNER)) return;
     const original = manager.preparePrompt;
     const wrapped = function (...args) {
         const result = original.apply(this, args);
@@ -160,6 +164,7 @@ export function installPresetPromptCapture(manager) {
         return result;
     };
     Object.defineProperty(wrapped, '__ttottoCapture', { value: true });
+    markHookOwner(wrapped, original, PROMPT_CAPTURE_OWNER);
     manager.preparePrompt = wrapped;
 }
 
@@ -218,7 +223,7 @@ export function buildPresetPromptAnchor(rawContent, names = {}) {
     return longest.slice(start, start + 50);
 }
 
-export function insertPresetRelativeGroups(messages, groups, presetPrompts, names = {}) {
+export function insertPresetRelativeGroups(messages, groups, presetPrompts, names = {}, { checkOnly = false } = {}) {
     if (!Array.isArray(messages)) return { inserted: [], missing: [] };
     const combined = new Map();
     for (const group of Array.isArray(groups) ? groups : []) {
@@ -245,12 +250,15 @@ export function insertPresetRelativeGroups(messages, groups, presetPrompts, name
         const raw = substitutePromptMacros(String(prompt?.content ?? '')
             .replace(/\{\{\/\/[^}]*\}\}/g, ''), names).trim();
         if (raw && !raw.includes('{{')) rendered.push(raw);
-        const target = prompt ? findPresetContentSpan(messages, rendered, prompt.role || 'system') : null;
+        const target = prompt && prompt.enabledInPreset !== false
+            ? findPresetContentSpan(messages, rendered, prompt.role || 'system') : null;
         if (!target) {
             missing.push({ position, identifier, keys: bundle.keys,
-                reason: !prompt ? 'preset_entry_missing' : !rendered.length ? 'unresolved_or_empty_prompt' : 'content_missing_or_ambiguous' });
+                reason: !prompt ? 'preset_entry_missing' : prompt.enabledInPreset === false ? 'preset_disabled'
+                    : !rendered.length ? 'unresolved_or_empty_prompt' : 'content_missing_or_ambiguous' });
             continue;
         }
+        if (checkOnly) continue;
         // Presets can be squashed into one system message. Split at the target
         // prompt's actual boundary, not at the end of the entire merged message.
         const insertAt = insertAtPresetSpan(messages, target, isAfter, bundle.contents.join('\n\n'));
@@ -265,7 +273,8 @@ function normalizePromptWhitespace(value) {
 
 function findTextSpan(text, needle) {
     const exact = text.indexOf(needle);
-    if (exact >= 0 && text.indexOf(needle, exact + 1) < 0) return { start: exact, end: exact + needle.length };
+    if (exact >= 0) return text.indexOf(needle, exact + 1) < 0
+        ? { start: exact, end: exact + needle.length } : { ambiguous: true };
     // Preserve raw offsets while allowing ST's newline/whitespace normalization.
     let normalized = '';
     const starts = [], ends = [];
@@ -279,7 +288,8 @@ function findTextSpan(text, needle) {
     const target = normalizePromptWhitespace(needle);
     if (!target) return null;
     const offset = normalized.indexOf(target);
-    if (offset < 0 || normalized.indexOf(target, offset + 1) >= 0) return null;
+    if (offset < 0) return null;
+    if (normalized.indexOf(target, offset + 1) >= 0) return { ambiguous: true };
     return { start: starts[offset], end: ends[offset + target.length - 1] };
 }
 
@@ -293,7 +303,8 @@ function findPresetContentSpan(messages, candidates, role) {
             parts.forEach((part, partIndex) => {
                 if (typeof part?.text !== 'string') return;
                 const span = findTextSpan(part.text, candidate);
-                if (span) matches.push({ index, partIndex, ...span });
+                if (span?.ambiguous) matches.push(null, null);
+                else if (span) matches.push({ index, partIndex, ...span });
             });
         });
         if (matches.length === 1) return matches[0];
@@ -338,11 +349,15 @@ function injectionGroupAlreadyPresent(messages, group) {
     const content = String(group?.content ?? '').trim();
     if (!content) return true;
     const combined = (Array.isArray(messages) ? messages : [])
+        .filter((message) => message?.role === 'system' || message?.role === 'developer')
         .map(requestMessageText)
         .join('\n');
     if (combined.includes(content)) return true;
-    const markers = injectionGroupMarkers(group);
-    return markers.length > 0 && markers.every((marker) => combined.includes(marker));
+    // Only our namespaced ban/echo blocks identify equivalent old forms.
+    // Generic WEAVE tags in someone else's prompt do not prove our full text.
+    const markers = group?.key === 'weave' ? [] : injectionGroupMarkers(group);
+    return markers.length > 0 && markers.every((marker) => combined.includes(marker)
+        && combined.includes(marker.replace('<', '</')));
 }
 
 export function appendGenerationGroups(messages, groups) {
@@ -356,38 +371,6 @@ export function appendGenerationGroups(messages, groups) {
         content: missingGroups.map((group) => String(group.content).trim()).join('\n\n'),
     });
     return missingGroups.map((group) => String(group.key ?? ''));
-}
-
-function removeExactGenerationGroups(messages, groups) {
-    if (!Array.isArray(messages)) return [];
-    const removed = [];
-    for (const group of Array.isArray(groups) ? groups : []) {
-        const content = String(group?.content ?? '').trim();
-        if (!content) continue;
-        for (let index = messages.length - 1; index >= 0; index -= 1) {
-            if (Array.isArray(messages[index]?.content)) {
-                const parts = messages[index].content;
-                const partIndex = parts.findIndex((part) => typeof part?.text === 'string' && part.text.includes(content));
-                if (partIndex < 0) continue;
-                const remainder = parts[partIndex].text.replace(content, '').trim();
-                if (remainder) parts[partIndex] = { ...parts[partIndex], text: remainder };
-                else parts.splice(partIndex, 1);
-                if (!parts.length) messages.splice(index, 1);
-                removed.push(String(group.key ?? ''));
-                break;
-            }
-            const messageContent = typeof messages[index]?.content === 'string'
-                ? messages[index].content
-                : '';
-            if (!messageContent.includes(content)) continue;
-            const remainder = messageContent.replace(content, '').trim();
-            if (remainder) messages[index].content = remainder;
-            else messages.splice(index, 1);
-            removed.push(String(group.key ?? ''));
-            break;
-        }
-    }
-    return removed;
 }
 
 export function normalizePromptOrder(order) {
@@ -1904,17 +1887,26 @@ function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt', co
     if (!pendingPresetPromptGroups.length || !Array.isArray(messages)) return null;
     const context = getContext();
     const groups = pendingPresetPromptGroups;
-    const removedDirect = removeExactGenerationGroups(messages, groups);
-    const relativeGroups = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO)
+    // Never remove/reposition existing content: matching text could belong to
+    // a user, a preset, or another extension. Only fill genuinely missing rules.
+    const allRelative = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
+    const relativeGroups = allRelative
         .filter((group) => !injectionGroupAlreadyPresent(messages, group));
+    const presentGroups = allRelative.filter((group) => injectionGroupAlreadyPresent(messages, group));
+    const presets = getPresetPrompts(context);
+    const names = { charName: context?.name2, userName: context?.name1 };
     const result = insertPresetRelativeGroups(
         messages,
         relativeGroups,
-        getPresetPrompts(context),
-        { charName: context?.name2, userName: context?.name1 },
+        presets,
+        names,
     );
+    // Keep a missing-target warning on the fetch pass even when the content
+    // was already delivered by the earlier SETTINGS_READY fallback.
+    const checked = insertPresetRelativeGroups(messages, presentGroups, presets, names, { checkOnly: true });
+    result.missing.push(...checked.missing);
     for (const item of result.missing) {
-        console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 답변 직전으로 대체`, item);
+        console.warn(`${LOG_PREFIX} 프리셋 주입 위치 미확인 — 누락된 본문은 답변 직전에 보충`, item);
     }
     const missingPositions = new Set(result.missing.map((item) => item.position));
     const fallbackGroups = groups.filter((group) =>
@@ -1925,7 +1917,6 @@ function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt', co
     if (consume) pendingPresetPromptGroups = [];
     console.debug(`${LOG_PREFIX} 최종 프롬프트 주입 확인`, {
         source,
-        removedDirect,
         preset: result.inserted,
         depthZeroOrFallback: appendedKeys,
     });
@@ -2033,6 +2024,9 @@ function mainRequestDecision(body, callerStack = '') {
     const mainPath = callerKind === 'main';
     if (callerKind === 'auxiliary') return { eligible: false, reason: 'auxiliary_request_path', rawType };
     const confirmed = confirmedMainRequests.has(mainRequestFingerprint(body));
+    // Other extensions can send the same chat turn while normal generation is
+    // active. Timing plus text alone must not authorize their auxiliary calls.
+    if (!mainPath && !confirmed) return { eligible: false, reason: 'main_request_path_not_confirmed', rawType };
     if (rawType && !ALLOWED_GENERATION_TYPES.has(rawType)
         && !(rawType === 'quiet' && (mainPath || confirmed))) return { eligible: false, reason: 'auxiliary_type', rawType };
     if (!runtimeActive || !(mainGenerationActive || mainPath || confirmed)
@@ -2052,17 +2046,19 @@ function mainRequestDecision(body, callerStack = '') {
     // translation and custom-request helpers may use those exact same values.
     if (!matches) return { eligible: false, reason: 'main_chat_turn_not_matched', rawType };
     return { eligible: true, reason: 'main_generation_and_chat_turn', rawType, mainPath,
-        provenance: mainPath ? 'st-main-generation' : confirmed ? 'confirmed-main-request' : 'active-generation-and-chat-turn',
+        provenance: mainPath ? 'st-main-generation' : 'confirmed-main-request',
         // quiet is the request/display mode, not an instruction to skip all
         // full-chat prompts. Preserve body.type and normalize only our own rules.
         type: ALLOWED_GENERATION_TYPES.has(rawType) ? rawType : observedGenerationType };
 }
 
-function installPresetPlacementFetchHook() {
+export function installPresetPlacementFetchHook() {
     if (typeof globalThis.fetch !== 'function') return;
-    if (globalThis.fetch.__ttottoPresetPlacementHook === true) return;
-    const originalFetch = globalThis.fetch.bind(globalThis);
+    if (hasHookOwner(globalThis.fetch, FETCH_HOOK_OWNER)) return;
+    const previousFetch = globalThis.fetch;
+    const originalFetch = previousFetch.bind(globalThis);
     const wrappedFetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
+        if (!runtimeActive) return originalFetch(url, options, ...rest);
         const requestInput = typeof Request !== 'undefined' && url instanceof Request;
         const urlText = typeof url === 'string' ? url : String(url?.url ?? url?.href ?? '');
         if (/\/api\/backends\/chat-completions\/generate(?:[?#]|$)/.test(urlText)
@@ -2091,7 +2087,7 @@ function installPresetPlacementFetchHook() {
                                 rawType: decision.rawType || '(없음)',
                                 requestPath: decision.provenance,
                                 mainRequestMatched: true,
-                                presetPositionMatched: result.missing.length === 0,
+                                fallbackUsed: result.missing.length > 0,
                                 preset: result.inserted,
                                 fallback: result.missing,
                                 expected: expectedGroups.map((group) => group.key),
@@ -2118,6 +2114,7 @@ function installPresetPlacementFetchHook() {
         enumerable: false,
         writable: false,
     });
+    markHookOwner(wrappedFetch, previousFetch, FETCH_HOOK_OWNER);
     globalThis.fetch = wrappedFetch;
 }
 

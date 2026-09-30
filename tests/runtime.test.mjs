@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// Model the real ST sender chain, rather than authorizing traffic just because
+// a generation event happened earlier in the test.
+function fromMainSender(action) {
+    function sendOpenAIRequest() { return action(); }
+    function sendGenerationRequest() { return sendOpenAIRequest(); }
+    return sendGenerationRequest();
+}
+
 test('금지어는 독립된 실제 표현일 때만 일치한다', async () => {
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -557,7 +565,7 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     const settingsOnlyMessages = [{ role: 'user', content: 'Continue the scene.' }];
     const settingsOnlyPayload = { messages: settingsOnlyMessages };
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
-        handler(settingsOnlyPayload);
+        fromMainSender(() => handler(settingsOnlyPayload));
     }
     assert.equal(settingsOnlyMessages.length, 1, '공유 메시지 배열은 수정하지 않는다');
     const settingsOnlyPrompt = settingsOnlyPayload.messages.map((message) => message.content).join('\n');
@@ -576,7 +584,7 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
         handler({ chat: finalMessages, dryRun: false });
     }
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
-        handler(finalPayload);
+        fromMainSender(() => handler(finalPayload));
     }
 
     const sentPrompt = finalPayload.messages.map((message) => message.content).join('\n');
@@ -648,13 +656,13 @@ test('보조 quiet 생성은 본 생성의 WEAVE를 소비하지 않고 실제 n
             { role: 'system', content: 'Preset target instruction.' },
             { role: 'user', content: 'Main scene turn.' },
         ] };
-        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main);
+        fromMainSender(() => listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main));
         assert.match(main.messages[1].content, /<ANTI_METAGAMING>/);
         // A later extension may replace the serialized messages: the fetch guard restores them.
         main.messages = main.messages.filter((message) => !message.content.includes('<ANTI_METAGAMING>'));
-        await globalThis.fetch('/api/backends/chat-completions/generate', {
+        await fromMainSender(() => globalThis.fetch('/api/backends/chat-completions/generate', {
             method: 'POST', body: JSON.stringify(main),
-        });
+        }));
         const sent = JSON.stringify(requests.at(-1));
         assert.equal((sent.match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
         assert.equal((sent.match(/<CHARACTER_KNOWLEDGE_AND_CONTEXT>/g) ?? []).length, 1);
@@ -777,14 +785,14 @@ test('type 없는 월드/번역 보조 요청과 normal 보조 요청을 제외�
             { role: 'user', content: [{ type: 'text', text: 'Dana: I will stay home today.' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,fixture' } }] },
         ] };
         const sharedMessages = main.messages;
-        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main);
+        fromMainSender(() => listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main));
         assert.equal(sharedMessages.length, 2, '전송 준비는 공유 원본 배열을 변경하지 않음');
         // A later extension deletes our event-time injection. Final fetch restores it.
         main.messages = main.messages.filter((message) => typeof message.content !== 'string' || !message.content.includes('<ANTI_METAGAMING>'));
         const abort = new AbortController();
         const originalSerialized = JSON.stringify(main);
         const request = new Request(`https://st.example${endpoint}`, { method: 'POST', body: originalSerialized, headers: { 'X-Test': 'preserved' }, signal: abort.signal });
-        await globalThis.fetch(request);
+        await fromMainSender(() => globalThis.fetch(request));
         const sent = requests.at(-1);
         assert.match(sent.body.messages[1].content, /<ANTI_METAGAMING>/);
         assert.equal(sent.body.messages[2].content, '\nLAST');
@@ -793,7 +801,7 @@ test('type 없는 월드/번역 보조 요청과 normal 보조 요청을 제외�
         assert.equal(await request.text(), originalSerialized, '원본 Request 본문도 소모하지 않음');
         assert.equal((JSON.stringify(sent.body).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
         // URL input and explicit normal work too; request state is not one-shot.
-        await globalThis.fetch(new URL(`https://st.example${endpoint}`), { method: 'POST', body: JSON.stringify({ ...main, type: 'normal' }) });
+        await fromMainSender(() => globalThis.fetch(new URL(`https://st.example${endpoint}`), { method: 'POST', body: JSON.stringify({ ...main, type: 'normal' }) }));
         assert.match(JSON.stringify(requests.at(-1).body), /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
         // A newly installed wrapper calls the old captured hook after deleting
         // the injection. Reattaching at SETTINGS_READY keeps that chain covered.
@@ -804,8 +812,8 @@ test('type 없는 월드/번역 보조 요청과 normal 보조 요청을 제외�
             return previousHook(url, { ...options, body: JSON.stringify(body) });
         };
         const rewritten = { ...main, type: 'normal' };
-        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(rewritten);
-        await send(rewritten);
+        fromMainSender(() => listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(rewritten));
+        await fromMainSender(() => send(rewritten));
         assert.equal((JSON.stringify(requests.at(-1).body).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
         assert.match(requests.at(-1).body.messages[1].content, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
         module.onDisable();
