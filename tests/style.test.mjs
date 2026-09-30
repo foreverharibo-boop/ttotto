@@ -103,36 +103,38 @@ test('금지어들 방지 강화 모드는 금지어와 구조 전체를 대상�
     assert.doesNotMatch(await readFile(new URL('../detector.js', import.meta.url), 'utf8'), /source === 'pinned'\)\.slice\(0,\s*30\)/);
 });
 
-test('WEAVE 프롬프트는 체크박스-이름-버전 선택과 짧은 설명으로 제공된다', async () => {
+test('WEAVE 프롬프트는 축약 선택 없이 체크박스와 원본 표시만 제공된다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     assert.match(html, />WEAVE 프롬프트</);
     assert.doesNotMatch(html, /class="ttotto-subsection ttotto-important-prompts"/);
-    assert.match(html, /ttotto-metagaming-prompt-enabled[\s\S]*?메타게이밍 방지[\s\S]*?ttotto-metagaming-prompt-version/);
-    assert.match(html, /ttotto-character-ai-prompt-enabled[\s\S]*?캐릭터 AI화 방지[\s\S]*?ttotto-character-ai-prompt-version/);
+    assert.match(html, /ttotto-metagaming-prompt-enabled[\s\S]*?메타게이밍 방지[\s\S]*?ttotto-original-only">원본/);
+    assert.match(html, /ttotto-character-ai-prompt-enabled[\s\S]*?캐릭터 AI화 방지[\s\S]*?ttotto-original-only">원본/);
     assert.match(html, /장면 밖 정보나 타인의 속마음을 이미 아는 것처럼 행동하지 않게/);
     assert.match(html, /만능 AI처럼 답하지 않고 설정·경험·기억 범위 안에서 자연스럽게 반응하게/);
-    assert.match(html, /ttotto-metagaming-prompt-version[\s\S]*?원본[\s\S]*?초축약/);
-    assert.match(html, /ttotto-character-ai-prompt-version[\s\S]*?원본[\s\S]*?축약[\s\S]*?초축약/);
+    assert.doesNotMatch(html, /ttotto-metagaming-prompt-version|ttotto-character-ai-prompt-version|초축약|>축약</);
     assert.match(css, /\.ttotto-important-prompt-row \{[\s\S]*?grid-template-columns:\s*18px\s+minmax\(0,\s*1fr\)/);
-    assert.match(js, /metagamingVersion\.disabled = !settings\.metagamingPromptEnabled/);
-    assert.match(js, /characterAiVersion\.disabled = !settings\.characterAiPromptEnabled/);
     assert.match(js, /bindSetting\('ttotto-metagaming-prompt-enabled',\s*'metagamingPromptEnabled',\s*Boolean\)/);
-    assert.match(js, /bindSetting\('ttotto-character-ai-prompt-version',\s*'characterAiPromptVersion',\s*String\)/);
+    assert.match(js, /bindSetting\('ttotto-character-ai-prompt-enabled',\s*'characterAiPromptEnabled',\s*Boolean\)/);
 });
 
-test('금지어·에코·메타게이밍·캐릭터 AI화 주입 순서는 모바일용 위아래 버튼으로 바꿀 수 있다', async () => {
+test('금지어·에코·WEAVE의 위치와 같은 위치 안의 순서를 각각 바꿀 수 있다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     assert.match(html, /id="ttotto-prompt-order-title">주입 순서</);
-    assert.match(html, /네 항목이[\s\S]*?같은 depth 0 시스템 주입문/);
+    assert.match(html, /같은 위치를 고른 묶음은[\s\S]*?WEAVE 안에서는 메타게이밍 방지 다음에 캐릭터 AI화 방지/);
     assert.match(html, /id="ttotto-prompt-order-list"/);
+    assert.match(html, /id="ttotto-ban-prompt-position"/);
+    assert.match(html, /id="ttotto-echo-prompt-position"/);
+    assert.match(html, /id="ttotto-weave-prompt-position"/);
+    assert.match(html, /금지어와 에코는 서로 다른 위치[\s\S]*?WEAVE 한 세트로 같은 위치/);
     assert.match(js, /ban:\s*'또또 금지어'/);
     assert.match(js, /echo:\s*'또또 에코 방지'/);
-    assert.match(js, /metagaming:\s*'메타게이밍 방지'/);
-    assert.match(js, /characterAi:\s*'캐릭터 AI화 방지'/);
+    assert.match(js, /weave:\s*'WEAVE 두 프롬프트'/);
+    assert.match(js, /PRESET_BEFORE_PREFIX/);
+    assert.match(js, /PRESET_AFTER_PREFIX/);
     assert.match(js, /function movePromptOrderItem\(key, direction\)/);
     assert.match(js, /up\.textContent = '↑'/);
     assert.match(js, /down\.textContent = '↓'/);

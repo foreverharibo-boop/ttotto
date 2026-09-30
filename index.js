@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.11.3';
+const EXTENSION_VERSION = '1.12.0';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -32,12 +32,14 @@ const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'cont
 const PROMPT_POSITION_IN_CHAT = 1;
 const PROMPT_ROLE_SYSTEM = 0;
 const IMPORTANT_PROMPT_DEPTH = 4;
-const PROMPT_ORDER_KEYS = Object.freeze(['ban', 'echo', 'metagaming', 'characterAi']);
+const PROMPT_POSITION_DEPTH_ZERO = 'depth_0';
+const PRESET_BEFORE_PREFIX = 'preset_before_';
+const PRESET_AFTER_PREFIX = 'preset_after_';
+const PROMPT_ORDER_KEYS = Object.freeze(['ban', 'echo', 'weave']);
 const PROMPT_ORDER_LABELS = Object.freeze({
     ban: '또또 금지어',
     echo: '또또 에코 방지',
-    metagaming: '메타게이밍 방지',
-    characterAi: '캐릭터 AI화 방지',
+    weave: 'WEAVE 두 프롬프트',
 });
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -50,10 +52,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     echoPreventionStrong: false,
     banPreventionStrong: false,
     metagamingPromptEnabled: false,
-    metagamingPromptVersion: 'full',
     characterAiPromptEnabled: false,
-    characterAiPromptVersion: 'full',
     promptOrder: PROMPT_ORDER_KEYS,
+    banPromptPosition: PROMPT_POSITION_DEPTH_ZERO,
+    echoPromptPosition: PROMPT_POSITION_DEPTH_ZERO,
+    weavePromptPosition: PROMPT_POSITION_DEPTH_ZERO,
     smartAnalysis: false,
     smartInterval: 3,
     smartProfileId: '',
@@ -94,6 +97,9 @@ let popupOpen = false;
 let popupEscapeHandlerAttached = false;
 let settingsHomeParent = null;
 let promptMetricRequestId = 0;
+let pendingPresetPromptGroups = [];
+let fetchHookInstalled = false;
+let presetPromptApi = null;
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
 
@@ -105,15 +111,124 @@ function getEventTypes(context = getContext()) {
     return context.eventTypes ?? context.event_types ?? {};
 }
 
+function getOaiSettings(context = getContext()) {
+    return presetPromptApi?.oai_settings
+        ?? context?.oaiSettings
+        ?? context?.oai_settings
+        ?? globalThis.oai_settings
+        ?? globalThis.window?.oai_settings
+        ?? null;
+}
+
+async function loadPresetPromptApi() {
+    if (presetPromptApi) return presetPromptApi;
+    try {
+        presetPromptApi = await import('../../../openai.js');
+    } catch (error) {
+        console.debug(`${LOG_PREFIX} 프리셋 모듈 직접 로드 생략`, error);
+    }
+    return presetPromptApi;
+}
+
+export function getPresetPrompts(context = getContext()) {
+    const oai = getOaiSettings(context);
+    if (!oai || !Array.isArray(oai.prompts)) return [];
+    const characters = Array.isArray(context?.characters) ? context.characters : [];
+    const activeCharacter = characters[Number(context?.characterId)];
+    const candidateIds = [
+        activeCharacter?.avatar,
+        activeCharacter?.name,
+        context?.characterId,
+        100001,
+    ].filter((value) => value !== undefined && value !== null && value !== '');
+    const orders = Array.isArray(oai.prompt_order) ? oai.prompt_order : [];
+    const selectedOrder = candidateIds
+        .map((candidate) => orders.find((entry) => String(entry?.character_id) === String(candidate)))
+        .find(Boolean)
+        ?? orders[0];
+    const orderList = Array.isArray(selectedOrder?.order) ? selectedOrder.order : [];
+
+    return orderList.map((entry) => {
+        const prompt = oai.prompts.find((candidate) => candidate?.identifier === entry?.identifier);
+        if (!prompt || prompt.marker) return null;
+        return {
+            identifier: String(prompt.identifier),
+            name: String(prompt.name || prompt.identifier),
+            content: String(prompt.content || ''),
+            enabledInPreset: entry.enabled !== false,
+        };
+    }).filter(Boolean);
+}
+
+function substitutePromptMacros(value, names = {}) {
+    return String(value ?? '')
+        .replace(/\{\{char\}\}/gi, String(names.charName ?? ''))
+        .replace(/\{\{user\}\}/gi, String(names.userName ?? ''));
+}
+
+export function buildPresetPromptAnchor(rawContent, names = {}) {
+    const source = String(rawContent ?? '');
+    if (!source.trim()) return '';
+    const withoutComments = source.replace(/\{\{\/\/[^}]*\}\}/g, '');
+    const clean = substitutePromptMacros(withoutComments, names).trim();
+    if (clean && !clean.includes('{{') && clean.length <= 80) return clean;
+    const lines = source.split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length >= 4 && !line.startsWith('{{//'));
+    const longest = lines
+        .map((line) => substitutePromptMacros(line, names))
+        .filter((line) => !line.includes('{{'))
+        .sort((left, right) => right.length - left.length)[0] ?? '';
+    if (longest.length <= 60) return longest;
+    const start = Math.max(0, Math.floor(longest.length / 2) - 25);
+    return longest.slice(start, start + 50);
+}
+
+export function insertPresetRelativeGroups(messages, groups, presetPrompts, names = {}) {
+    if (!Array.isArray(messages)) return { inserted: [], missing: [] };
+    const combined = new Map();
+    for (const group of Array.isArray(groups) ? groups : []) {
+        const position = normalizePromptPosition(group?.position);
+        const content = String(group?.content ?? '').trim();
+        if (position === PROMPT_POSITION_DEPTH_ZERO || !content) continue;
+        const current = combined.get(position);
+        if (current) {
+            current.keys.push(String(group.key ?? ''));
+            current.contents.push(content);
+        } else {
+            combined.set(position, { keys: [String(group.key ?? '')], contents: [content] });
+        }
+    }
+
+    const inserted = [];
+    const missing = [];
+    for (const [position, bundle] of combined) {
+        const isAfter = position.startsWith(PRESET_AFTER_PREFIX);
+        const identifier = position.slice((isAfter ? PRESET_AFTER_PREFIX : PRESET_BEFORE_PREFIX).length);
+        const prompt = (Array.isArray(presetPrompts) ? presetPrompts : [])
+            .find((candidate) => String(candidate?.identifier) === identifier);
+        const anchor = buildPresetPromptAnchor(prompt?.content, names);
+        const targetIndex = anchor
+            ? messages.findIndex((message) => typeof message?.content === 'string' && message.content.includes(anchor))
+            : -1;
+        if (!prompt || !anchor || targetIndex < 0) {
+            missing.push({ position, identifier, keys: bundle.keys });
+            continue;
+        }
+        const insertAt = isAfter ? targetIndex + 1 : targetIndex;
+        messages.splice(insertAt, 0, { role: 'system', content: bundle.contents.join('\n\n') });
+        inserted.push({ position, identifier, keys: bundle.keys, index: insertAt });
+    }
+    return { inserted, missing };
+}
+
 export function normalizePromptOrder(order) {
     const normalized = [];
     for (const value of Array.isArray(order) ? order : []) {
         const key = String(value ?? '');
-        // v1.10의 합쳐진 WEAVE 항목은 저장된 위치를 유지한 채 두 항목으로 나눈다.
-        if (key === 'weave') {
-            for (const weaveKey of ['metagaming', 'characterAi']) {
-                if (!normalized.includes(weaveKey)) normalized.push(weaveKey);
-            }
+        // 구버전의 분리된 두 WEAVE 항목은 먼저 등장한 자리에 한 묶음으로 합친다.
+        if (key === 'metagaming' || key === 'characterAi') {
+            if (!normalized.includes('weave')) normalized.push('weave');
             continue;
         }
         if (PROMPT_ORDER_KEYS.includes(key) && !normalized.includes(key)) normalized.push(key);
@@ -122,6 +237,14 @@ export function normalizePromptOrder(order) {
         if (!normalized.includes(key)) normalized.push(key);
     }
     return normalized;
+}
+
+export function normalizePromptPosition(value) {
+    const position = String(value ?? '');
+    if (position === PROMPT_POSITION_DEPTH_ZERO) return position;
+    if (position.startsWith(PRESET_BEFORE_PREFIX) && position.length > PRESET_BEFORE_PREFIX.length) return position;
+    if (position.startsWith(PRESET_AFTER_PREFIX) && position.length > PRESET_AFTER_PREFIX.length) return position;
+    return PROMPT_POSITION_DEPTH_ZERO;
 }
 
 function getSettings() {
@@ -197,6 +320,9 @@ function getSettings() {
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     normalizeImportantPromptSettings(settings);
     settings.promptOrder = normalizePromptOrder(settings.promptOrder);
+    settings.banPromptPosition = normalizePromptPosition(settings.banPromptPosition);
+    settings.echoPromptPosition = normalizePromptPosition(settings.echoPromptPosition);
+    settings.weavePromptPosition = normalizePromptPosition(settings.weavePromptPosition);
     settings.dragBanMenuEnabled = settings.dragBanMenuEnabled !== false;
     // 마이그레이션: 구버전 900(잘림) 또는 1000000(백엔드 거부) → 65536
     const smartTokens = Number(settings.smartMaxTokens);
@@ -1408,6 +1534,7 @@ function invalidateAnalysis() {
 }
 
 function clearInjectedPrompt() {
+    pendingPresetPromptGroups = [];
     const promptsToClear = [
         [PROMPT_KEY, 0],
         [LEGACY_METAGAMING_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
@@ -1485,13 +1612,41 @@ export function buildCompleteGenerationInjection(analysisPrompt, settings, gener
     const sections = {
         ban,
         echo,
-        metagaming: buildMetagamingPromptInjection(settings),
-        characterAi: buildCharacterAiPromptInjection(settings),
+        weave: [
+            buildMetagamingPromptInjection(settings),
+            buildCharacterAiPromptInjection(settings),
+        ].filter(Boolean).join('\n\n'),
     };
     return normalizePromptOrder(settings?.promptOrder)
         .map((key) => sections[key])
         .filter(Boolean)
         .join('\n\n');
+}
+
+export function buildPositionedGenerationInjections(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
+    const { ban, echo } = buildGenerationInjectionSections(
+        analysisPrompt,
+        settings,
+        generationType,
+        promptChat,
+        contextChat,
+    );
+    const sections = {
+        ban,
+        echo,
+        weave: [
+            buildMetagamingPromptInjection(settings),
+            buildCharacterAiPromptInjection(settings),
+        ].filter(Boolean).join('\n\n'),
+    };
+    const positions = {
+        ban: normalizePromptPosition(settings?.banPromptPosition),
+        echo: normalizePromptPosition(settings?.echoPromptPosition),
+        weave: normalizePromptPosition(settings?.weavePromptPosition),
+    };
+    return normalizePromptOrder(settings?.promptOrder)
+        .map((key) => ({ key, position: positions[key], content: sections[key] }))
+        .filter((group) => group.content);
 }
 
 globalThis.ttottoGenerationInterceptor = async function ttottoGenerationInterceptor(_chat, _contextSize, _abort, type) {
@@ -1512,28 +1667,77 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         // Recheck only the small recent window; rerun the detector only if it changed.
         const recentMessages = collectAssistantMessages();
         const analysis = analyzeCurrentChat(false, recentMessages);
-        const prompt = buildCompleteGenerationInjection(analysis.prompt, settings, type, _chat, getContext().chat);
-        if (!prompt) return;
-        if (prompt) {
+        const groups = buildPositionedGenerationInjections(analysis.prompt, settings, type, _chat, getContext().chat);
+        if (!groups.length) return;
+        const depthZeroPrompt = groups
+            .filter((group) => group.position === PROMPT_POSITION_DEPTH_ZERO)
+            .map((group) => group.content)
+            .join('\n\n');
+        pendingPresetPromptGroups = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
+        if (depthZeroPrompt) {
             getContext().setExtensionPrompt(
                 PROMPT_KEY,
-                prompt,
+                depthZeroPrompt,
                 PROMPT_POSITION_IN_CHAT,
                 0,
                 false,
                 PROMPT_ROLE_SYSTEM,
             );
         }
-        const echoLabel = prompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
-        const weaveCount = Number(prompt.includes('<ANTI_METAGAMING>'))
-            + Number(prompt.includes('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
+        const completePrompt = groups.map((group) => group.content).join('\n\n');
+        const echoLabel = completePrompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
+        const weaveCount = Number(completePrompt.includes('<ANTI_METAGAMING>'))
+            + Number(completePrompt.includes('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
         const weaveLabel = weaveCount ? ` + WEAVE ${weaveCount}개` : '';
-        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${weaveLabel} 주입`);
+        const presetLabel = pendingPresetPromptGroups.length ? ` · 프리셋 위치 ${pendingPresetPromptGroups.length}묶음` : '';
+        console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${weaveLabel} 주입${presetLabel}`);
     } catch (error) {
         clearInjectedPrompt();
         console.error(`${LOG_PREFIX} 생성 전 주입 실패 — 본 채팅 생성은 계속합니다.`, error);
     }
 };
+
+function installPresetPlacementFetchHook() {
+    if (fetchHookInstalled || typeof globalThis.fetch !== 'function') return;
+    fetchHookInstalled = true;
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
+        if (pendingPresetPromptGroups.length
+            && String(options?.method ?? '').toUpperCase() === 'POST'
+            && typeof options?.body === 'string') {
+            try {
+                const urlText = typeof url === 'string' ? url : String(url?.url ?? '');
+                const stack = new Error().stack ?? '';
+                const isAuxiliaryRequest = /translat|tts|speech|embed|caption|vision|classif/i.test(urlText)
+                    || /translator\.js|custom-request\.js|fetchTranslation|sendAiRequest|requestSmartAnalysis|requestStructureJson|requestBanTrace/i.test(stack);
+                if (!isAuxiliaryRequest) {
+                    const body = JSON.parse(options.body);
+                    if (Array.isArray(body?.messages)) {
+                        const context = getContext();
+                        const groups = pendingPresetPromptGroups;
+                        pendingPresetPromptGroups = [];
+                        const result = insertPresetRelativeGroups(
+                            body.messages,
+                            groups,
+                            getPresetPrompts(context),
+                            { charName: context?.name2, userName: context?.name1 },
+                        );
+                        for (const item of result.missing) {
+                            console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 건너뜀`, item);
+                        }
+                        if (result.inserted.length) {
+                            options = { ...options, body: JSON.stringify(body) };
+                            console.debug(`${LOG_PREFIX} 프리셋 프롬프트 사이 주입 완료`, result.inserted);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn(`${LOG_PREFIX} 프리셋 위치 주입 처리 실패`, error);
+            }
+        }
+        return originalFetch(url, options, ...rest);
+    };
+}
 
 function buildSmartInput(messages) {
     const settings = getSettings();
@@ -2321,6 +2525,51 @@ function renderPromptOrder(settings = getSettings()) {
     });
 }
 
+function renderPromptPositionSelect(elementId, currentValue) {
+    const select = document.getElementById(elementId);
+    if (!select) return;
+    const normalized = normalizePromptPosition(currentValue);
+    const prompts = getPresetPrompts();
+    select.replaceChildren();
+
+    const depthOption = document.createElement('option');
+    depthOption.value = PROMPT_POSITION_DEPTH_ZERO;
+    depthOption.textContent = '답변 직전 (기존 depth 0)';
+    select.append(depthOption);
+
+    if (prompts.length) {
+        const group = document.createElement('optgroup');
+        group.label = '프리셋 프롬프트 기준';
+        for (const prompt of prompts) {
+            const before = document.createElement('option');
+            before.value = `${PRESET_BEFORE_PREFIX}${prompt.identifier}`;
+            before.textContent = `${prompt.name} 앞`;
+            group.append(before);
+
+            const after = document.createElement('option');
+            after.value = `${PRESET_AFTER_PREFIX}${prompt.identifier}`;
+            after.textContent = `${prompt.name} 다음`;
+            group.append(after);
+        }
+        select.append(group);
+    }
+
+    if (normalized !== PROMPT_POSITION_DEPTH_ZERO
+        && !Array.from(select.options).some((option) => option.value === normalized)) {
+        const stale = document.createElement('option');
+        stale.value = normalized;
+        stale.textContent = '저장된 위치 (현재 프리셋에서 찾을 수 없음)';
+        select.append(stale);
+    }
+    select.value = normalized;
+}
+
+function renderPromptPlacements(settings = getSettings()) {
+    renderPromptPositionSelect('ttotto-ban-prompt-position', settings.banPromptPosition);
+    renderPromptPositionSelect('ttotto-echo-prompt-position', settings.echoPromptPosition);
+    renderPromptPositionSelect('ttotto-weave-prompt-position', settings.weavePromptPosition);
+}
+
 function updateUi(analysisOverride = null) {
     if (!uiReady) return;
     const settings = getSettings();
@@ -2344,19 +2593,10 @@ function updateUi(analysisOverride = null) {
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
     const metagamingCheckbox = document.getElementById('ttotto-metagaming-prompt-enabled');
-    const metagamingVersion = document.getElementById('ttotto-metagaming-prompt-version');
     if (metagamingCheckbox) metagamingCheckbox.checked = Boolean(settings.metagamingPromptEnabled);
-    if (metagamingVersion) {
-        metagamingVersion.value = settings.metagamingPromptVersion;
-        metagamingVersion.disabled = !settings.metagamingPromptEnabled;
-    }
     const characterAiCheckbox = document.getElementById('ttotto-character-ai-prompt-enabled');
-    const characterAiVersion = document.getElementById('ttotto-character-ai-prompt-version');
     if (characterAiCheckbox) characterAiCheckbox.checked = Boolean(settings.characterAiPromptEnabled);
-    if (characterAiVersion) {
-        characterAiVersion.value = settings.characterAiPromptVersion;
-        characterAiVersion.disabled = !settings.characterAiPromptEnabled;
-    }
+    renderPromptPlacements(settings);
     renderPromptOrder(settings);
     const dragBanMenuCheckbox = document.getElementById('ttotto-drag-ban-menu-enabled');
     if (dragBanMenuCheckbox) dragBanMenuCheckbox.checked = Boolean(settings.dragBanMenuEnabled);
@@ -2469,7 +2709,7 @@ function bindSetting(id, key, parser = (value) => value) {
             scheduleSmartAnalysis({ force: true });
         }
         if (key === 'dragBanMenuEnabled') syncDragBanHandlers(settings);
-        if (['metagamingPromptEnabled', 'metagamingPromptVersion', 'characterAiPromptEnabled', 'characterAiPromptVersion'].includes(key)) {
+        if (['metagamingPromptEnabled', 'characterAiPromptEnabled', 'banPromptPosition', 'echoPromptPosition', 'weavePromptPosition'].includes(key)) {
             clearInjectedPrompt();
         }
         invalidateAnalysis();
@@ -2498,9 +2738,10 @@ function bindUi() {
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
     bindSetting('ttotto-metagaming-prompt-enabled', 'metagamingPromptEnabled', Boolean);
-    bindSetting('ttotto-metagaming-prompt-version', 'metagamingPromptVersion', String);
     bindSetting('ttotto-character-ai-prompt-enabled', 'characterAiPromptEnabled', Boolean);
-    bindSetting('ttotto-character-ai-prompt-version', 'characterAiPromptVersion', String);
+    bindSetting('ttotto-ban-prompt-position', 'banPromptPosition', String);
+    bindSetting('ttotto-echo-prompt-position', 'echoPromptPosition', String);
+    bindSetting('ttotto-weave-prompt-position', 'weavePromptPosition', String);
     bindSetting('ttotto-drag-ban-menu-enabled', 'dragBanMenuEnabled', Boolean);
     bindSetting('ttotto-smart-enabled', 'smartAnalysis', Boolean);
     bindSetting('ttotto-smart-interval', 'smartInterval', Number);
@@ -2512,6 +2753,12 @@ function bindUi() {
     bindSetting('ttotto-exclude-all-tags', 'excludeAllTaggedBlocks', Boolean);
     bindSetting('ttotto-excluded-tags', 'excludedTags', String);
     bindSetting('ttotto-excluded-classes', 'excludedClasses', String);
+
+    document.getElementById('ttotto-refresh-preset-prompts')?.addEventListener('click', async () => {
+        await loadPresetPromptApi();
+        renderPromptPlacements(getSettings());
+        toastr.success('현재 프리셋의 프롬프트 목록을 새로 불러왔어요.', '🌀또또');
+    });
 
     document.getElementById('ttotto-ban-character').addEventListener('change', renderBanManager);
     const submitBan = () => {
@@ -3434,6 +3681,8 @@ function unregisterEvents() {
 
 async function initialize() {
     runtimeActive = true;
+    installPresetPlacementFetchHook();
+    await loadPresetPromptApi();
     getSettings();
     migrateStoredMemoryOnce();
     registerEvents();

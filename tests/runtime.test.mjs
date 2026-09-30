@@ -360,7 +360,7 @@ test('장기 채팅 갱신과 확장 수명주기를 안전하게 처리한다',
     assert.equal(promptCalls.at(-1)[1], '');
 });
 
-test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입문 안에서 설정한 모든 순서를 따른다', async () => {
+test('금지어·에코·WEAVE는 depth 0에서 설정한 묶음 순서를 따르고 WEAVE 내부는 붙어 있다', async () => {
     const promptCalls = [];
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
@@ -370,9 +370,7 @@ test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입�
                 enabled: true,
                 echoPreventionEnabled: true,
                 metagamingPromptEnabled: true,
-                metagamingPromptVersion: 'mini',
                 characterAiPromptEnabled: true,
-                characterAiPromptVersion: 'compact',
                 globalBans: ['forbidden phrase'],
                 globalBanIds: { 'forbidden phrase': 'global-forbidden-id' },
             },
@@ -404,23 +402,21 @@ test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입�
     assert.ok(echoIndex > banIndex);
     assert.ok(metaIndex > echoIndex);
     assert.ok(characterIndex > metaIndex);
-    assert.match(injected, /A genius is not omniscient/);
+    assert.match(injected, /## CHARACTER_KNOWLEDGE_BOUNDARY/);
 
     const permute = (items) => items.length <= 1
         ? [items]
         : items.flatMap((item, index) => permute(items.filter((_, candidate) => candidate !== index))
             .map((rest) => [item, ...rest]));
-    const permutations = permute(['ban', 'echo', 'metagaming', 'characterAi']);
-    assert.equal(permutations.length, 24);
+    const permutations = permute(['ban', 'echo', 'weave']);
+    assert.equal(permutations.length, 6);
     for (const promptOrder of permutations) {
         const assembled = module.buildCompleteGenerationInjection(
             '<BAN_MARKER>forbidden</BAN_MARKER>',
             {
                 echoPreventionEnabled: true,
                 metagamingPromptEnabled: true,
-                metagamingPromptVersion: 'mini',
                 characterAiPromptEnabled: true,
-                characterAiPromptVersion: 'compact',
                 promptOrder,
             },
             'normal',
@@ -430,10 +426,10 @@ test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입�
         const positions = {
             ban: assembled.indexOf('<BAN_MARKER>'),
             echo: assembled.indexOf('<ttotto_anti_echo>'),
-            metagaming: assembled.indexOf('<ANTI_METAGAMING>'),
-            characterAi: assembled.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'),
+            weave: assembled.indexOf('<ANTI_METAGAMING>'),
         };
         assert.ok(Object.values(positions).every((position) => position >= 0));
+        assert.ok(assembled.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>') > positions.weave);
         assert.deepEqual(
             [...promptOrder].sort((left, right) => positions[left] - positions[right]),
             promptOrder,
@@ -441,13 +437,13 @@ test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입�
         );
     }
     assert.deepEqual(
-        module.normalizePromptOrder(['echo', 'weave', 'ban']),
-        ['echo', 'metagaming', 'characterAi', 'ban'],
-        'v1.10의 WEAVE 위치에서 메타게이밍과 캐릭터 AI화를 분리함',
+        module.normalizePromptOrder(['echo', 'metagaming', 'characterAi', 'ban']),
+        ['echo', 'weave', 'ban'],
+        '구버전의 두 WEAVE 항목을 먼저 등장한 한 자리로 합침',
     );
     assert.deepEqual(
         module.normalizePromptOrder(['echo', 'echo', 'unknown']),
-        ['echo', 'ban', 'metagaming', 'characterAi'],
+        ['echo', 'ban', 'weave'],
     );
 
     promptCalls.length = 0;
@@ -457,6 +453,40 @@ test('금지어·에코·메타게이밍·캐릭터 AI화는 한 depth 0 주입�
     context.extensionSettings.ttotto.globalBans = [];
     await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
     assert.equal(promptCalls.filter((call) => call[1]).length, 0);
+});
+
+test('금지어·에코는 서로 다른 프리셋 위치에, WEAVE 두 원본은 한 위치에 함께 삽입된다', async () => {
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {}, chatMetadata: {}, chat: [], characters: [], groups: [],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?preset-placement=${Date.now()}`);
+    const messages = [
+        { role: 'system', content: 'System Alpha content.' },
+        { role: 'system', content: 'System Beta content.' },
+        { role: 'user', content: 'Hello' },
+    ];
+    const result = module.insertPresetRelativeGroups(messages, [
+        { key: 'ban', position: 'preset_after_alpha', content: '<BAN />' },
+        { key: 'echo', position: 'preset_before_beta', content: '<ECHO />' },
+        { key: 'weave', position: 'preset_after_beta', content: '<ANTI_METAGAMING>meta</ANTI_METAGAMING>\n\n<CHARACTER_KNOWLEDGE_AND_CONTEXT>character</CHARACTER_KNOWLEDGE_AND_CONTEXT>' },
+    ], [
+        { identifier: 'alpha', name: 'Alpha', content: 'System Alpha content.' },
+        { identifier: 'beta', name: 'Beta', content: 'System Beta content.' },
+    ]);
+    assert.equal(result.inserted.length, 3);
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(messages.map((message) => message.content), [
+        'System Alpha content.',
+        '<BAN />',
+        '<ECHO />',
+        'System Beta content.',
+        '<ANTI_METAGAMING>meta</ANTI_METAGAMING>\n\n<CHARACTER_KNOWLEDGE_AND_CONTEXT>character</CHARACTER_KNOWLEDGE_AND_CONTEXT>',
+        'Hello',
+    ]);
 });
 
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
