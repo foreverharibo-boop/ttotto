@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.5';
+const EXTENSION_VERSION = '1.12.6';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -101,6 +101,9 @@ let pendingPresetPromptGroups = [];
 let observedGenerationType = 'normal';
 let skipCurrentGeneration = false;
 let presetPromptApi = null;
+let mainGenerationActive = false;
+let generationChatSnapshot = [];
+const preparedPresetContents = new Map();
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
 
@@ -122,13 +125,40 @@ function getOaiSettings(context = getContext()) {
 }
 
 async function loadPresetPromptApi() {
-    if (presetPromptApi) return presetPromptApi;
+    if (presetPromptApi) {
+        installPresetPromptCapture(presetPromptApi?.promptManager);
+        return presetPromptApi;
+    }
     try {
         presetPromptApi = await import('../../../openai.js');
+        installPresetPromptCapture(presetPromptApi?.promptManager);
     } catch (error) {
         console.debug(`${LOG_PREFIX} 프리셋 모듈 직접 로드 생략`, error);
     }
     return presetPromptApi;
+}
+
+// Observe ST's already-expanded prompts, without changing its preset/settings.
+// This includes nontrivial macros and character-specific main/jailbreak overrides.
+export function installPresetPromptCapture(manager) {
+    if (!manager || typeof manager.preparePrompt !== 'function'
+        || manager.preparePrompt.__ttottoCapture) return;
+    const original = manager.preparePrompt;
+    const wrapped = function (...args) {
+        const result = original.apply(this, args);
+        if (runtimeActive && mainGenerationActive && result?.identifier
+            && typeof result.content === 'string') {
+            const key = String(result.identifier);
+            const variants = preparedPresetContents.get(key) ?? new Set();
+            variants.add(result.content);
+            // Keep only a small generation-scoped set; never retain chat history.
+            if (variants.size > 8) variants.delete(variants.values().next().value);
+            preparedPresetContents.set(key, variants);
+        }
+        return result;
+    };
+    Object.defineProperty(wrapped, '__ttottoCapture', { value: true });
+    manager.preparePrompt = wrapped;
 }
 
 export function getPresetPrompts(context = getContext()) {
@@ -156,6 +186,7 @@ export function getPresetPrompts(context = getContext()) {
             identifier: String(prompt.identifier),
             name: String(prompt.name || prompt.identifier),
             content: String(prompt.content || ''),
+            role: prompt.role || 'system',
             enabledInPreset: entry.enabled !== false,
         };
     }).filter(Boolean);
@@ -208,19 +239,87 @@ export function insertPresetRelativeGroups(messages, groups, presetPrompts, name
         const identifier = position.slice((isAfter ? PRESET_AFTER_PREFIX : PRESET_BEFORE_PREFIX).length);
         const prompt = (Array.isArray(presetPrompts) ? presetPrompts : [])
             .find((candidate) => String(candidate?.identifier) === identifier);
-        const anchor = buildPresetPromptAnchor(prompt?.content, names);
-        const targetIndex = anchor
-            ? messages.findIndex((message) => typeof message?.content === 'string' && message.content.includes(anchor))
-            : -1;
-        if (!prompt || !anchor || targetIndex < 0) {
-            missing.push({ position, identifier, keys: bundle.keys });
+        const rendered = [...(preparedPresetContents.get(identifier) ?? [])].reverse();
+        const raw = substitutePromptMacros(String(prompt?.content ?? '')
+            .replace(/\{\{\/\/[^}]*\}\}/g, ''), names).trim();
+        if (raw && !raw.includes('{{')) rendered.push(raw);
+        const target = prompt ? findPresetContentSpan(messages, rendered, prompt.role || 'system') : null;
+        if (!target) {
+            missing.push({ position, identifier, keys: bundle.keys,
+                reason: !prompt ? 'preset_entry_missing' : !rendered.length ? 'unresolved_or_empty_prompt' : 'content_missing_or_ambiguous' });
             continue;
         }
-        const insertAt = isAfter ? targetIndex + 1 : targetIndex;
-        messages.splice(insertAt, 0, { role: 'system', content: bundle.contents.join('\n\n') });
+        // Presets can be squashed into one system message. Split at the target
+        // prompt's actual boundary, not at the end of the entire merged message.
+        const insertAt = insertAtPresetSpan(messages, target, isAfter, bundle.contents.join('\n\n'));
         inserted.push({ position, identifier, keys: bundle.keys, index: insertAt });
     }
     return { inserted, missing };
+}
+
+function normalizePromptWhitespace(value) {
+    return String(value ?? '').replace(/\s+/gu, ' ').trim();
+}
+
+function findTextSpan(text, needle) {
+    const exact = text.indexOf(needle);
+    if (exact >= 0 && text.indexOf(needle, exact + 1) < 0) return { start: exact, end: exact + needle.length };
+    // Preserve raw offsets while allowing ST's newline/whitespace normalization.
+    let normalized = '';
+    const starts = [], ends = [];
+    for (let index = 0; index < text.length; index++) {
+        const char = text[index];
+        if (/\s/u.test(char)) {
+            if (normalized.endsWith(' ')) ends[ends.length - 1] = index + 1;
+            else { normalized += ' '; starts.push(index); ends.push(index + 1); }
+        } else { normalized += char; starts.push(index); ends.push(index + 1); }
+    }
+    const target = normalizePromptWhitespace(needle);
+    if (!target) return null;
+    const offset = normalized.indexOf(target);
+    if (offset < 0 || normalized.indexOf(target, offset + 1) >= 0) return null;
+    return { start: starts[offset], end: ends[offset + target.length - 1] };
+}
+
+function findPresetContentSpan(messages, candidates, role) {
+    for (const candidate of [...new Set(candidates.map((value) => String(value).trim()).filter(Boolean))]) {
+        const matches = [];
+        messages.forEach((message, index) => {
+            if (message?.role !== role && !(role === 'system' && message?.role === 'developer')) return;
+            const parts = typeof message.content === 'string'
+                ? [{ text: message.content }] : Array.isArray(message.content) ? message.content : [];
+            parts.forEach((part, partIndex) => {
+                if (typeof part?.text !== 'string') return;
+                const span = findTextSpan(part.text, candidate);
+                if (span) matches.push({ index, partIndex, ...span });
+            });
+        });
+        if (matches.length === 1) return matches[0];
+    }
+    return null;
+}
+
+function insertAtPresetSpan(messages, span, isAfter, content) {
+    const original = messages[span.index];
+    const offset = isAfter ? span.end : span.start;
+    let before, after;
+    if (typeof original.content === 'string') {
+        before = original.content.slice(0, offset);
+        after = original.content.slice(offset);
+    } else {
+        const part = original.content[span.partIndex];
+        const left = part.text.slice(0, offset), right = part.text.slice(offset);
+        before = [...original.content.slice(0, span.partIndex), ...(left ? [{ ...part, text: left }] : [])];
+        after = [...(right ? [{ ...part, text: right }] : []), ...original.content.slice(span.partIndex + 1)];
+    }
+    const hasContent = (value) => typeof value === 'string' ? Boolean(value.trim()) : value.length > 0;
+    const replacements = [];
+    if (hasContent(before)) replacements.push({ ...original, content: before });
+    const index = span.index + replacements.length;
+    replacements.push({ role: 'system', content });
+    if (hasContent(after)) replacements.push({ ...original, content: after });
+    messages.splice(span.index, 1, ...replacements);
+    return index;
 }
 
 function injectionGroupMarkers(group) {
@@ -237,7 +336,7 @@ function injectionGroupAlreadyPresent(messages, group) {
     const content = String(group?.content ?? '').trim();
     if (!content) return true;
     const combined = (Array.isArray(messages) ? messages : [])
-        .map((message) => typeof message?.content === 'string' ? message.content : '')
+        .map(requestMessageText)
         .join('\n');
     if (combined.includes(content)) return true;
     const markers = injectionGroupMarkers(group);
@@ -264,6 +363,17 @@ function removeExactGenerationGroups(messages, groups) {
         const content = String(group?.content ?? '').trim();
         if (!content) continue;
         for (let index = messages.length - 1; index >= 0; index -= 1) {
+            if (Array.isArray(messages[index]?.content)) {
+                const parts = messages[index].content;
+                const partIndex = parts.findIndex((part) => typeof part?.text === 'string' && part.text.includes(content));
+                if (partIndex < 0) continue;
+                const remainder = parts[partIndex].text.replace(content, '').trim();
+                if (remainder) parts[partIndex] = { ...parts[partIndex], text: remainder };
+                else parts.splice(partIndex, 1);
+                if (!parts.length) messages.splice(index, 1);
+                removed.push(String(group.key ?? ''));
+                break;
+            }
             const messageContent = typeof messages[index]?.content === 'string'
                 ? messages[index].content
                 : '';
@@ -1591,6 +1701,9 @@ function invalidateAnalysis() {
 
 function clearInjectedPrompt() {
     pendingPresetPromptGroups = [];
+    mainGenerationActive = false;
+    generationChatSnapshot = [];
+    preparedPresetContents.clear();
     const promptsToClear = [
         [PROMPT_KEY, 0],
         [LEGACY_METAGAMING_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
@@ -1715,6 +1828,9 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
     // 다른 확장이 나중에 fetch를 교체했더라도 생성 직전에 다시 연결한다.
     installPresetPlacementFetchHook();
     clearInjectedPrompt();
+    mainGenerationActive = true;
+    generationChatSnapshot = captureConversationEvidence(_chat);
+    installPresetPromptCapture(presetPromptApi?.promptManager ?? getContext()?.promptManager);
     try {
         const settings = getSettings();
         const state = getChatState(false);
@@ -1804,7 +1920,7 @@ function preparePendingGroupsFromCurrentChat(generationType = observedGeneration
     if (!ALLOWED_GENERATION_TYPES.has(type)) return [];
     const settings = getSettings();
     const state = getChatState(false);
-    if (!runtimeActive || !settings.enabled || !state?.enabled
+    if (!runtimeActive || !mainGenerationActive || !settings.enabled || !state?.enabled
         || state.skipNextGeneration || skipCurrentGeneration) return [];
     const analysis = analyzeCurrentChat(false, collectAssistantMessages());
     const groups = buildPositionedGenerationInjections(
@@ -1818,22 +1934,69 @@ function preparePendingGroupsFromCurrentChat(generationType = observedGeneration
     return groups;
 }
 
+function requestMessageText(message) {
+    if (typeof message?.content === 'string') return message.content;
+    if (Array.isArray(message?.content)) return message.content
+        .filter((part) => typeof part?.text === 'string').map((part) => part.text).join('\n');
+    return typeof message?.mes === 'string' ? message.mes : '';
+}
+
+function captureConversationEvidence(chat) {
+    if (!Array.isArray(chat)) return [];
+    // Last user turn is stronger evidence than an assistant quotation in an
+    // analysis prompt. Keep only the last visible turn, plus its known originals.
+    let last = null;
+    for (let index = chat.length - 1; index >= 0; index--) {
+        const item = chat[index];
+        if (!item || item.is_system || item.is_hidden) continue;
+        if (!last) last = item;
+        if (item.is_user === true || item.role === 'user') { last = item; break; }
+    }
+    if (!last) return [];
+    const role = last.is_user === true || last.role === 'user' ? 'user' : 'assistant';
+    const variants = [requestMessageText(last), findStoredOriginal(last), last.extra?.display_text];
+    return [...new Set(variants.filter((value) => typeof value === 'string' && value.trim()))]
+        .map((text) => ({ role, text: normalizePromptWhitespace(text) }));
+}
+
+function mainRequestDecision(body) {
+    const rawType = String(body?.type ?? '').trim().toLocaleLowerCase();
+    if (rawType && !ALLOWED_GENERATION_TYPES.has(rawType)) return { eligible: false, reason: 'auxiliary_type', rawType };
+    if (!runtimeActive || !mainGenerationActive || skipCurrentGeneration) return { eligible: false, reason: 'no_active_main_generation', rawType };
+    if (!Array.isArray(body?.messages)) return { eligible: false, reason: 'no_messages', rawType };
+    const context = getContext();
+    const evidence = [...generationChatSnapshot, ...captureConversationEvidence(context.chat)];
+    const matches = evidence.some((item) => body.messages.some((message) => {
+        if (message?.role !== item.role) return false;
+        const text = normalizePromptWhitespace(requestMessageText(message));
+        if (!text) return false;
+        if (text === item.text) return true;
+        const name = item.role === 'user' ? context.name1 : context.name2;
+        return Boolean(name) && text === `${name}: ${item.text}`;
+    }));
+    // Do not equate missing type / type=normal with main chat. World-building,
+    // translation and custom-request helpers may use those exact same values.
+    if (!matches) return { eligible: false, reason: 'main_chat_turn_not_matched', rawType };
+    return { eligible: true, reason: 'active_generation_and_chat_turn', rawType,
+        type: rawType || observedGenerationType };
+}
+
 function installPresetPlacementFetchHook() {
     if (typeof globalThis.fetch !== 'function') return;
     if (globalThis.fetch.__ttottoPresetPlacementHook === true) return;
     const originalFetch = globalThis.fetch.bind(globalThis);
     const wrappedFetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
-        if (String(options?.method ?? '').toUpperCase() === 'POST'
-            && typeof options?.body === 'string') {
+        const requestInput = typeof Request !== 'undefined' && url instanceof Request;
+        const urlText = typeof url === 'string' ? url : String(url?.url ?? url?.href ?? '');
+        if (/\/api\/backends\/chat-completions\/generate(?:[?#]|$)/.test(urlText)
+            && String(options?.method ?? (requestInput ? url.method : '')).toUpperCase() === 'POST') {
             try {
-                const urlText = typeof url === 'string' ? url : String(url?.url ?? '');
-                // The official Chat Completion endpoint includes type in JSON.
-                // Raw/ConnectionManager analysis uses the same URL with type=quiet;
-                // stack names and the last GENERATION_STARTED are not reliable identifiers.
-                if (/\/api\/backends\/chat-completions\/generate(?:[?#]|$)/.test(urlText)) {
-                    const body = JSON.parse(options.body);
-                    const type = String(body?.type ?? '').trim().toLocaleLowerCase() || 'normal';
-                    if (ALLOWED_GENERATION_TYPES.has(type) && Array.isArray(body?.messages)) {
+                const serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
+                if (typeof serialized === 'string') {
+                    const body = JSON.parse(serialized);
+                    const decision = mainRequestDecision(body);
+                    if (decision.eligible) {
+                        const type = decision.type;
                         preparePendingGroupsFromCurrentChat(type);
                         const expectedGroups = pendingPresetPromptGroups;
                         const result = applyPendingGroupsToFinalMessages(body.messages, 'fetch-final', true);
@@ -1842,6 +2005,11 @@ function installPresetPlacementFetchHook() {
                             const sentContent = JSON.stringify(body.messages);
                             console.info(`${LOG_PREFIX} 전송 직전 태그 검사`, {
                                 type,
+                                rawType: decision.rawType || '(없음)',
+                                mainRequestMatched: true,
+                                presetPositionMatched: result.missing.length === 0,
+                                preset: result.inserted,
+                                fallback: result.missing,
                                 expected: expectedGroups.map((group) => group.key),
                                 ban: sentContent.includes('<ttotto_anti_repetition>'),
                                 echo: sentContent.includes('<ttotto_anti_echo>'),
@@ -1849,6 +2017,8 @@ function installPresetPlacementFetchHook() {
                                 characterAi: sentContent.includes('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'),
                             });
                         }
+                    } else if (runtimeActive && mainGenerationActive) {
+                        console.debug(`${LOG_PREFIX} 전송 요청 제외`, decision);
                     }
                 }
             } catch (error) {
@@ -3785,14 +3955,24 @@ function registerEvents() {
         observedGenerationType = type;
         skipCurrentGeneration = false;
         clearInjectedPrompt();
+        mainGenerationActive = true;
+        generationChatSnapshot = captureConversationEvidence(getContext().chat);
+        installPresetPlacementFetchHook();
+        installPresetPromptCapture(presetPromptApi?.promptManager ?? getContext()?.promptManager);
         preparePendingGroupsFromCurrentChat(observedGenerationType);
     });
     // PROMPT_READY is shared with generateRaw and has no generation type.
     // Never inject there: wait for the request-specific SETTINGS_READY payload.
     listen('CHAT_COMPLETION_SETTINGS_READY', (payload) => {
-        const type = String(payload?.type ?? '').trim().toLocaleLowerCase() || 'normal';
-        if (payload?.dryRun || !ALLOWED_GENERATION_TYPES.has(type)) return;
-        preparePendingGroupsFromCurrentChat(type);
+        if (payload?.dryRun) return;
+        const decision = mainRequestDecision(payload);
+        if (!decision.eligible) return;
+        installPresetPlacementFetchHook();
+        preparePendingGroupsFromCurrentChat(decision.type);
+        // Operate on the outbound copy, never on shared chat message objects.
+        payload.messages = payload.messages.map((message) => ({ ...message,
+            content: Array.isArray(message.content) ? message.content.map((part) => ({ ...part })) : message.content,
+        }));
         applyPendingGroupsToFinalMessages(payload?.messages, 'chat-completion-settings-ready');
     });
     listen('GENERATION_ENDED', clearInjectedPrompt);

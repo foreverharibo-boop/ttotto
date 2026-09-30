@@ -555,10 +555,12 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     // generate_interceptor가 호출되지 않는 환경에서도 생성 시작 → 실제 요청 데이터 경로로 들어간다.
     for (const handler of listeners.get(eventTypes.GENERATION_STARTED) ?? []) handler(undefined);
     const settingsOnlyMessages = [{ role: 'user', content: 'Continue the scene.' }];
+    const settingsOnlyPayload = { messages: settingsOnlyMessages };
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
-        handler({ messages: settingsOnlyMessages });
+        handler(settingsOnlyPayload);
     }
-    const settingsOnlyPrompt = settingsOnlyMessages.map((message) => message.content).join('\n');
+    assert.equal(settingsOnlyMessages.length, 1, '공유 메시지 배열은 수정하지 않는다');
+    const settingsOnlyPrompt = settingsOnlyPayload.messages.map((message) => message.content).join('\n');
     assert.match(settingsOnlyPrompt, /<ANTI_METAGAMING>/);
     assert.match(settingsOnlyPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
 
@@ -569,14 +571,15 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     assert.doesNotMatch(interceptorPrompt, /<ANTI_METAGAMING>/);
     assert.doesNotMatch(interceptorPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
     const finalMessages = [{ role: 'user', content: 'Continue the scene.' }];
+    const finalPayload = { messages: finalMessages };
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_PROMPT_READY) ?? []) {
         handler({ chat: finalMessages, dryRun: false });
     }
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
-        handler({ messages: finalMessages });
+        handler(finalPayload);
     }
 
-    const sentPrompt = finalMessages.map((message) => message.content).join('\n');
+    const sentPrompt = finalPayload.messages.map((message) => message.content).join('\n');
     assert.match(sentPrompt, /<ANTI_METAGAMING>/);
     assert.match(sentPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
     assert.equal((sentPrompt.match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
@@ -671,6 +674,144 @@ test('보조 quiet 생성은 본 생성의 WEAVE를 소비하지 않고 실제 n
         module.onDisable();
         globalThis.fetch = originalFetch;
     }
+});
+
+test('합쳐진 프리셋의 항목 경계에 삽입하고 공백 차이와 developer 역할을 보존한다', async () => {
+    const context = { eventTypes: { APP_READY: 'app_ready' }, eventSource: { on() {}, removeListener() {} }, extensionSettings: {}, chatMetadata: {}, chat: [] };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?merged-boundaries=${Date.now()}`);
+    const messages = [{ role: 'developer', name: 'rules', content: 'FIRST\n\nTarget   line one.\r\nTarget line two.\n\nLAST' }];
+    const target = [{ identifier: 'target', content: 'Target line one.\nTarget line two.' }];
+    const result = module.insertPresetRelativeGroups(messages, [
+        { key: 'weave', position: 'preset_after_target', content: '<WEAVE />' },
+        { key: 'ban', position: 'preset_before_target', content: '<BAN />' },
+    ], target);
+    assert.equal(result.inserted.length, 2);
+    assert.deepEqual(result.missing, []);
+    assert.equal(messages.map((item) => item.content).join(''), 'FIRST\n\n<BAN />Target   line one.\r\nTarget line two.<WEAVE />\n\nLAST');
+    assert.equal(messages[0].role, 'developer');
+    assert.equal(messages.at(-1).name, 'rules');
+});
+
+test('동일한 위치의 묶음 순서와 멀티모달 첨부를 유지하고 모호한 앵커는 추측하지 않는다', async () => {
+    globalThis.SillyTavern = { getContext: () => ({ eventTypes: { APP_READY: 'app_ready' }, eventSource: { on() {}, removeListener() {} }, extensionSettings: {}, chatMetadata: {} }) };
+    const module = await import(`../index.js?multimodal-boundaries=${Date.now()}`);
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,fixture' } };
+    const messages = [{ role: 'system', content: [{ type: 'text', text: 'FIRST\nTarget.\nLAST' }, image] }];
+    const result = module.insertPresetRelativeGroups(messages, [
+        { key: 'weave', position: 'preset_after_target', content: '<META />\n\n<AI />' },
+        { key: 'ban', position: 'preset_after_target', content: '<BAN />' },
+    ], [{ identifier: 'target', content: 'Target.' }]);
+    assert.equal(result.inserted.length, 1);
+    assert.equal(messages[1].content, '<META />\n\n<AI />\n\n<BAN />');
+    assert.deepEqual(messages.at(-1).content.at(-1), image);
+    const ambiguous = [{ role: 'system', content: 'Target.\nTarget.' }];
+    const missed = module.insertPresetRelativeGroups(ambiguous, [{ key: 'weave', position: 'preset_after_target', content: 'DO NOT INSERT' }], [{ identifier: 'target', content: 'Target.' }]);
+    assert.equal(missed.inserted.length, 0);
+    assert.equal(missed.missing[0].reason, 'content_missing_or_ambiguous');
+    assert.equal(ambiguous.length, 1);
+});
+
+test('ST가 실제로 확장한 매크로 본문을 관찰해 프리셋 경계를 찾되 설정은 바꾸지 않는다', async () => {
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' }, eventSource: { on() {}, removeListener() {} }, extensionSettings: { ttotto: { metagamingPromptEnabled: true, characterAiPromptEnabled: true } },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'prepared-macros', characterId: 0, characters: [], chat: [{ is_user: true, mes: 'Main user turn.' }],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?prepared-macros=${Date.now()}`);
+    const raw = { identifier: 'target', content: '{{getvar::actual_rules}}' };
+    const originalJson = JSON.stringify(raw);
+    const manager = { prefix: 'Expanded', preparePrompt(prompt) { return { ...prompt, content: `${this.prefix} real rules.` }; } };
+    module.installPresetPromptCapture(manager);
+    try {
+        await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+        assert.equal(manager.preparePrompt(raw).content, 'Expanded real rules.');
+        const messages = [{ role: 'system', content: 'BEFORE\nExpanded real rules.\nAFTER' }];
+        const result = module.insertPresetRelativeGroups(messages, [{ key: 'weave', position: 'preset_after_target', content: '<WEAVE />' }], [raw]);
+        assert.equal(result.inserted.length, 1);
+        assert.equal(messages[0].content, 'BEFORE\nExpanded real rules.');
+        assert.equal(messages[1].content, '<WEAVE />');
+        assert.equal(messages[2].content, '\nAFTER');
+        assert.equal(JSON.stringify(raw), originalJson);
+    } finally { module.onDisable(); }
+});
+
+test('type 없는 월드/번역 보조 요청과 normal 보조 요청을 제외하고 Request·URL 본생성만 주입한다', async () => {
+    const listeners = new Map(), requests = [];
+    const events = { APP_READY: 'app_ready', GENERATION_STARTED: 'start', CHAT_COMPLETION_SETTINGS_READY: 'settings' };
+    const context = {
+        eventTypes: events, eventSource: { on(event, handler) { listeners.set(event, handler); }, removeListener(event) { listeners.delete(event); } },
+        extensionSettings: { ttotto: { metagamingPromptEnabled: true, characterAiPromptEnabled: true, echoPreventionEnabled: false, weavePromptPosition: 'preset_after_target' } },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'strict-fetch', characterId: 0, characters: [], groups: [], name1: 'Dana',
+        chat: [{ is_user: true, mes: '오늘은 집에서 쉴래.', extra: { original_text: 'I will stay home today.' } }],
+        oaiSettings: { prompts: [{ identifier: 'target', content: 'Target rules.' }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'target', enabled: true }] }] },
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+        const input = url instanceof Request;
+        const body = options?.body ?? (input ? await url.clone().text() : null);
+        requests.push({ body: JSON.parse(body), headers: options?.headers ?? (input ? url.headers : null), signal: options?.signal ?? (input ? url.signal : null) });
+        return { ok: true };
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?strict-fetch=${Date.now()}`);
+    module.onEnable();
+    const endpoint = '/api/backends/chat-completions/generate';
+    const send = async (body) => globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(body) });
+    try {
+        await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+        for (const type of [undefined, 'normal', 'quiet']) {
+            const auxiliary = { ...(type ? { type } : {}), messages: [{ role: 'user', content: 'Build a world injection. I will stay home today.' }] };
+            listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(auxiliary);
+            await send(auxiliary);
+            assert.equal(auxiliary.messages.length, 1);
+            assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /ANTI_METAGAMING/);
+        }
+        const main = { messages: [
+            { role: 'system', content: 'FIRST\nTarget rules.\nLAST' },
+            { role: 'user', content: [{ type: 'text', text: 'Dana: I will stay home today.' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,fixture' } }] },
+        ] };
+        const sharedMessages = main.messages;
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(main);
+        assert.equal(sharedMessages.length, 2, '전송 준비는 공유 원본 배열을 변경하지 않음');
+        // A later extension deletes our event-time injection. Final fetch restores it.
+        main.messages = main.messages.filter((message) => typeof message.content !== 'string' || !message.content.includes('<ANTI_METAGAMING>'));
+        const abort = new AbortController();
+        const originalSerialized = JSON.stringify(main);
+        const request = new Request(`https://st.example${endpoint}`, { method: 'POST', body: originalSerialized, headers: { 'X-Test': 'preserved' }, signal: abort.signal });
+        await globalThis.fetch(request);
+        const sent = requests.at(-1);
+        assert.match(sent.body.messages[1].content, /<ANTI_METAGAMING>/);
+        assert.equal(sent.body.messages[2].content, '\nLAST');
+        assert.equal(sent.headers.get('X-Test'), 'preserved');
+        assert.equal(sent.signal.aborted, false);
+        assert.equal(await request.text(), originalSerialized, '원본 Request 본문도 소모하지 않음');
+        assert.equal((JSON.stringify(sent.body).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+        // URL input and explicit normal work too; request state is not one-shot.
+        await globalThis.fetch(new URL(`https://st.example${endpoint}`), { method: 'POST', body: JSON.stringify({ ...main, type: 'normal' }) });
+        assert.match(JSON.stringify(requests.at(-1).body), /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+        // A newly installed wrapper calls the old captured hook after deleting
+        // the injection. Reattaching at SETTINGS_READY keeps that chain covered.
+        const previousHook = globalThis.fetch;
+        globalThis.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            body.messages = body.messages.filter((message) => typeof message.content !== 'string' || !message.content.includes('<ANTI_METAGAMING>'));
+            return previousHook(url, { ...options, body: JSON.stringify(body) });
+        };
+        const rewritten = { ...main, type: 'normal' };
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(rewritten);
+        await send(rewritten);
+        assert.equal((JSON.stringify(requests.at(-1).body).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+        assert.match(requests.at(-1).body.messages[1].content, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+        module.onDisable();
+        await send({ type: 'normal', messages: [{ role: 'user', content: 'I will stay home today.' }] });
+        assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /ANTI_METAGAMING/);
+    } finally { module.onDisable(); globalThis.fetch = oldFetch; }
 });
 
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
