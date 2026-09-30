@@ -519,7 +519,9 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     const listeners = new Map();
     const eventTypes = {
         APP_READY: 'app_ready',
+        GENERATION_STARTED: 'generation_started',
         CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+        CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
     };
     const context = {
         eventTypes,
@@ -550,15 +552,35 @@ test('일반 생성 type이 비어 있어도 최종 Chat Completion messages에 
     const module = await import(`../index.js?empty-type-final-prompt=${Date.now()}`);
     module.onEnable();
 
-    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, undefined);
+    // generate_interceptor가 호출되지 않는 환경에서도 생성 시작 → 실제 요청 데이터 경로로 들어간다.
+    for (const handler of listeners.get(eventTypes.GENERATION_STARTED) ?? []) handler(undefined);
+    const settingsOnlyMessages = [{ role: 'user', content: 'Continue the scene.' }];
+    for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
+        handler({ messages: settingsOnlyMessages });
+    }
+    const settingsOnlyPrompt = settingsOnlyMessages.map((message) => message.content).join('\n');
+    assert.match(settingsOnlyPrompt, /<ANTI_METAGAMING>/);
+    assert.match(settingsOnlyPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+
+    // 반대로 최종 이벤트가 없는 환경에서는 interceptor 채팅 배열 직접 삽입이 안전망이 된다.
+    const interceptorChat = [{ is_user: true, mes: 'Continue the scene.' }];
+    await globalThis.ttottoGenerationInterceptor(interceptorChat, 0, () => {}, undefined);
+    const interceptorPrompt = interceptorChat.map((message) => message.mes ?? '').join('\n');
+    assert.match(interceptorPrompt, /<ANTI_METAGAMING>/);
+    assert.match(interceptorPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
     const finalMessages = [{ role: 'user', content: 'Continue the scene.' }];
     for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_PROMPT_READY) ?? []) {
         handler({ chat: finalMessages, dryRun: false });
+    }
+    for (const handler of listeners.get(eventTypes.CHAT_COMPLETION_SETTINGS_READY) ?? []) {
+        handler({ messages: finalMessages });
     }
 
     const sentPrompt = finalMessages.map((message) => message.content).join('\n');
     assert.match(sentPrompt, /<ANTI_METAGAMING>/);
     assert.match(sentPrompt, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+    assert.equal((sentPrompt.match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+    assert.equal((sentPrompt.match(/<CHARACTER_KNOWLEDGE_AND_CONTEXT>/g) ?? []).length, 1);
     assert.ok(sentPrompt.indexOf('<ANTI_METAGAMING>') < sentPrompt.indexOf('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
     module.onDisable();
 });

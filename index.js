@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.3';
+const EXTENSION_VERSION = '1.12.4';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -98,6 +98,8 @@ let popupEscapeHandlerAttached = false;
 let settingsHomeParent = null;
 let promptMetricRequestId = 0;
 let pendingPresetPromptGroups = [];
+let observedGenerationType = 'normal';
+let observedGenerationStartedAt = 0;
 let presetPromptApi = null;
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
@@ -253,6 +255,44 @@ export function appendGenerationGroups(messages, groups) {
         content: missingGroups.map((group) => String(group.content).trim()).join('\n\n'),
     });
     return missingGroups.map((group) => String(group.key ?? ''));
+}
+
+function removeExactGenerationGroups(messages, groups) {
+    if (!Array.isArray(messages)) return [];
+    const removed = [];
+    for (const group of Array.isArray(groups) ? groups : []) {
+        const content = String(group?.content ?? '').trim();
+        if (!content) continue;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const messageContent = typeof messages[index]?.content === 'string'
+                ? messages[index].content
+                : '';
+            if (!messageContent.includes(content)) continue;
+            const remainder = messageContent.replace(content, '').trim();
+            if (remainder) messages[index].content = remainder;
+            else messages.splice(index, 1);
+            removed.push(String(group.key ?? ''));
+            break;
+        }
+    }
+    return removed;
+}
+
+function injectGroupsIntoInterceptorChat(chat, groups) {
+    if (!Array.isArray(chat)) return false;
+    const content = (Array.isArray(groups) ? groups : [])
+        .map((group) => String(group?.content ?? '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+    if (!content) return false;
+    chat.push({
+        is_user: false,
+        name: 'System',
+        send_date: Date.now(),
+        mes: content,
+        extra: { ttotto_ephemeral_injection: true },
+    });
+    return true;
 }
 
 export function normalizePromptOrder(order) {
@@ -1694,6 +1734,8 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const state = getChatState(false);
         if (!runtimeActive || !settings.enabled || !state?.enabled) return;
         const generationType = String(type ?? '').trim().toLocaleLowerCase() || 'normal';
+        observedGenerationType = generationType;
+        observedGenerationStartedAt = Date.now();
         if (!ALLOWED_GENERATION_TYPES.has(generationType)) return;
         if (state.skipNextGeneration) {
             state.skipNextGeneration = false;
@@ -1725,6 +1767,10 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
                 PROMPT_ROLE_SYSTEM,
             );
         }
+        // CardInject와 같은 검증된 generate_interceptor 직접 삽입 경로.
+        // 뒤의 최종-payload 훅이 작동하면 이 임시본을 제거하고 선택 위치로 재배치하며,
+        // 훅이 비활성인 ST 버전에서도 최소한 답변 직전 주입은 남는다.
+        injectGroupsIntoInterceptorChat(_chat, groups);
         const completePrompt = groups.map((group) => group.content).join('\n\n');
         const echoLabel = completePrompt.includes('<ttotto_anti_echo>') ? ' + 에코 방지' : '';
         const weaveCount = Number(completePrompt.includes('<ANTI_METAGAMING>'))
@@ -1743,6 +1789,7 @@ function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt') {
     if (!pendingPresetPromptGroups.length || !Array.isArray(messages)) return null;
     const context = getContext();
     const groups = pendingPresetPromptGroups;
+    const removedDirect = removeExactGenerationGroups(messages, groups);
     const relativeGroups = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
     const result = insertPresetRelativeGroups(
         messages,
@@ -1760,10 +1807,30 @@ function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt') {
     pendingPresetPromptGroups = [];
     console.debug(`${LOG_PREFIX} 최종 프롬프트 주입 확인`, {
         source,
+        removedDirect,
         preset: result.inserted,
         depthZeroOrFallback: appendedKeys,
     });
     return { ...result, appendedKeys };
+}
+
+function preparePendingGroupsFromCurrentChat(generationType = observedGenerationType) {
+    if (pendingPresetPromptGroups.length) return pendingPresetPromptGroups;
+    const type = String(generationType ?? '').trim().toLocaleLowerCase() || 'normal';
+    if (!ALLOWED_GENERATION_TYPES.has(type)) return [];
+    const settings = getSettings();
+    const state = getChatState(false);
+    if (!runtimeActive || !settings.enabled || !state?.enabled || state.skipNextGeneration) return [];
+    const analysis = analyzeCurrentChat(false, collectAssistantMessages());
+    const groups = buildPositionedGenerationInjections(
+        analysis.prompt,
+        settings,
+        type,
+        getContext().chat,
+        getContext().chat,
+    );
+    pendingPresetPromptGroups = groups;
+    return groups;
 }
 
 function installPresetPlacementFetchHook() {
@@ -3712,11 +3779,30 @@ function registerEvents() {
         else reconcileOffenseEvidence();
         handleHistoryMutation();
     });
+    listen('GENERATION_STARTED', (payload) => {
+        const rawType = typeof payload === 'string'
+            ? payload
+            : payload?.type ?? payload?.generationType ?? payload?.generation_type;
+        observedGenerationType = String(rawType ?? '').trim().toLocaleLowerCase() || 'normal';
+        observedGenerationStartedAt = Date.now();
+        clearInjectedPrompt();
+        preparePendingGroupsFromCurrentChat(observedGenerationType);
+    });
     // Chat Completion의 최종 messages 배열이 완성된 직후 직접 검수·보충한다.
     // fetch 교체 여부와 무관하므로 Vertex AI를 포함한 실제 생성 요청에 확실히 반영된다.
     listen('CHAT_COMPLETION_PROMPT_READY', (payload) => {
         if (payload?.dryRun) return;
+        if (!pendingPresetPromptGroups.length && Date.now() - observedGenerationStartedAt < 120000) {
+            preparePendingGroupsFromCurrentChat(observedGenerationType);
+        }
         applyPendingGroupsToFinalMessages(payload?.chat, 'chat-completion-ready');
+    });
+    // 이 이벤트의 messages가 실제 /generate 요청 본문이므로 마지막 안전망으로 한 번 더 확인한다.
+    listen('CHAT_COMPLETION_SETTINGS_READY', (payload) => {
+        if (!pendingPresetPromptGroups.length && Date.now() - observedGenerationStartedAt < 120000) {
+            preparePendingGroupsFromCurrentChat(observedGenerationType);
+        }
+        applyPendingGroupsToFinalMessages(payload?.messages, 'chat-completion-settings-ready');
     });
     listen('GENERATION_ENDED', clearInjectedPrompt);
     listen('GENERATION_STOPPED', clearInjectedPrompt);
