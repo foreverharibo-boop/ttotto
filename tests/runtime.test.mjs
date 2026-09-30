@@ -814,6 +814,88 @@ test('type 없는 월드/번역 보조 요청과 normal 보조 요청을 제외�
     } finally { module.onDisable(); globalThis.fetch = oldFetch; }
 });
 
+test('실제 ST 본생성 경로의 quiet는 주입하고 번역·raw quiet는 같은 내용이어도 제외한다', async () => {
+    const listeners = new Map(), requests = [];
+    const events = { APP_READY: 'ready', GENERATION_STARTED: 'start', GENERATION_ENDED: 'end', CHAT_COMPLETION_SETTINGS_READY: 'settings' };
+    const context = {
+        eventTypes: events, eventSource: { on(event, handler) { listeners.set(event, handler); }, removeListener(event) { listeners.delete(event); } },
+        extensionSettings: { ttotto: { metagamingPromptEnabled: true, characterAiPromptEnabled: true, echoPreventionEnabled: false, weavePromptPosition: 'preset_after_target' } },
+        chatMetadata: { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } },
+        chatId: 'real-main-quiet', characterId: 0, characters: [], groups: [],
+        chat: [{ is_user: true, mes: 'Main scene turn.' }],
+        oaiSettings: { prompts: [{ identifier: 'target', content: 'Target rules.' }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'target', enabled: true }] }] },
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => { requests.push(JSON.parse(options.body)); return { ok: true }; };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?real-main-quiet=${Date.now()}`);
+    module.onEnable();
+    const makePayload = () => ({ type: 'quiet', model: 'main-model', messages: [
+        { role: 'system', content: 'Target rules.' }, { role: 'user', content: 'Main scene turn.' },
+    ] });
+    async function sendOpenAIRequest(payload) {
+        listeners.get(events.CHAT_COMPLETION_SETTINGS_READY)(payload);
+        return globalThis.fetch('/api/backends/chat-completions/generate', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    async function sendGenerationRequest(payload) { return await sendOpenAIRequest(payload); }
+    async function generateRawData(payload) { return await sendOpenAIRequest(payload); }
+    async function translateInputBeforeGeneration(payload) { return await generateRawData(payload); }
+    try {
+        await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+        await translateInputBeforeGeneration(makePayload());
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        // Even a helper running inside the main async tree is not the main request.
+        async function mainWithNestedHelper(payload) {
+            async function sendGenerationRequest() { return await generateRawData(payload); }
+            return await sendGenerationRequest();
+        }
+        await mainWithNestedHelper(makePayload());
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        await sendGenerationRequest(makePayload());
+        assert.match(requests.at(-1).messages[1].content, /<ANTI_METAGAMING>/);
+        assert.equal(requests.at(-1).type, 'quiet', '전송 종류 자체를 normal로 바꾸면 안 됨');
+        assert.equal((JSON.stringify(requests.at(-1)).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+        // If asynchronous middleware loses the original call stack, the exact
+        // outbound payload certified at SETTINGS_READY is still recognized.
+        const certified = JSON.stringify(requests.at(-1));
+        await globalThis.fetch(new Request('https://st.example/api/backends/chat-completions/generate', { method: 'POST', body: certified }));
+        assert.equal((JSON.stringify(requests.at(-1)).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+        // A previously certified body cannot override a positively known raw helper.
+        await translateInputBeforeGeneration(makePayload());
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        await generateRawData({ ...makePayload(), type: 'normal' });
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        listeners.get(events.GENERATION_ENDED)?.();
+        // Some reply-gating extensions start the main Generate as quiet from the outset.
+        listeners.get(events.GENERATION_STARTED)('quiet', {}, false);
+        await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'quiet');
+        await sendGenerationRequest(makePayload());
+        assert.match(requests.at(-1).messages[1].content, /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
+        listeners.get(events.GENERATION_ENDED)?.();
+        context.chatMetadata.ttotto.skipNextGeneration = true;
+        await sendGenerationRequest(makePayload());
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+        assert.equal(context.chatMetadata.ttotto.skipNextGeneration, false, 'quiet 본생성도 1회 쉬기를 한 번 소비함');
+        listeners.get(events.GENERATION_ENDED)?.();
+        await sendGenerationRequest(makePayload());
+        assert.match(JSON.stringify(requests.at(-1)), /ANTI_METAGAMING/);
+    } finally { module.onDisable(); globalThis.fetch = oldFetch; }
+});
+
+test('ST 본생성 판별은 가장 가까운 sender 기준이며 바깥 번역기 이름만으로 제외하지 않는다', async () => {
+    const context = { eventTypes: { APP_READY: 'ready' }, eventSource: { on() {}, removeListener() {} }, extensionSettings: {}, chatMetadata: {} };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?sender-stack=${Date.now()}`);
+    assert.equal(module.isStMainGenerationCall('Error\n at window.fetch (index.js:1517)\n at ttottoPresetPlacementFetch (index.js:2028)\n at sendOpenAIRequest (openai.js:3151)\n at async sendGenerationRequest (script.js:6118)\n at async finishGenerating (script.js:5449)'), true);
+    assert.equal(module.isStMainGenerationCall('Error\n at wrapper (translator.js:100)\n at sendOpenAIRequest (openai.js:3151)\n at async sendGenerationRequest (script.js:6118)'), true);
+    assert.equal(module.isStMainGenerationCall('Error\n at sendOpenAIRequest (openai.js:3151)\n at generateRawData (script.js:4000)\n at async sendGenerationRequest (script.js:6118)'), false);
+    assert.equal(module.isStMainGenerationCall('Error\n at sendRequest (custom-request.js:463)\n at translateInputBeforeGeneration (index.js:7859)\n at Generate (script.js:4299)'), false);
+    assert.equal(module.isStMainGenerationCall('Error\n at sendOpenAIRequest (openai.js:3151)'), false);
+    module.onDisable();
+});
+
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
     const promptCalls = [];
     const context = {
