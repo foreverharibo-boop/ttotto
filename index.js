@@ -23,7 +23,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.1';
+const EXTENSION_VERSION = '1.12.2';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -98,7 +98,6 @@ let popupEscapeHandlerAttached = false;
 let settingsHomeParent = null;
 let promptMetricRequestId = 0;
 let pendingPresetPromptGroups = [];
-let fetchHookInstalled = false;
 let presetPromptApi = null;
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
@@ -220,6 +219,40 @@ export function insertPresetRelativeGroups(messages, groups, presetPrompts, name
         inserted.push({ position, identifier, keys: bundle.keys, index: insertAt });
     }
     return { inserted, missing };
+}
+
+function injectionGroupMarkers(group) {
+    if (group?.key === 'ban') return ['<ttotto_anti_repetition>'];
+    if (group?.key === 'echo') return ['<ttotto_anti_echo>'];
+    if (group?.key === 'weave') {
+        return ['<ANTI_METAGAMING>', '<CHARACTER_KNOWLEDGE_AND_CONTEXT>']
+            .filter((marker) => String(group?.content ?? '').includes(marker));
+    }
+    return [];
+}
+
+function injectionGroupAlreadyPresent(messages, group) {
+    const content = String(group?.content ?? '').trim();
+    if (!content) return true;
+    const combined = (Array.isArray(messages) ? messages : [])
+        .map((message) => typeof message?.content === 'string' ? message.content : '')
+        .join('\n');
+    if (combined.includes(content)) return true;
+    const markers = injectionGroupMarkers(group);
+    return markers.length > 0 && markers.every((marker) => combined.includes(marker));
+}
+
+export function appendGenerationGroups(messages, groups) {
+    if (!Array.isArray(messages)) return [];
+    const missingGroups = (Array.isArray(groups) ? groups : [])
+        .filter((group) => String(group?.content ?? '').trim())
+        .filter((group) => !injectionGroupAlreadyPresent(messages, group));
+    if (!missingGroups.length) return [];
+    messages.push({
+        role: 'system',
+        content: missingGroups.map((group) => String(group.content).trim()).join('\n\n'),
+    });
+    return missingGroups.map((group) => String(group.key ?? ''));
 }
 
 export function normalizePromptOrder(order) {
@@ -1650,6 +1683,8 @@ export function buildPositionedGenerationInjections(analysisPrompt, settings, ge
 }
 
 globalThis.ttottoGenerationInterceptor = async function ttottoGenerationInterceptor(_chat, _contextSize, _abort, type) {
+    // 다른 확장이 나중에 fetch를 교체했더라도 생성 직전에 다시 연결한다.
+    installPresetPlacementFetchHook();
     clearInjectedPrompt();
     try {
         const settings = getSettings();
@@ -1673,7 +1708,9 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
             .filter((group) => group.position === PROMPT_POSITION_DEPTH_ZERO)
             .map((group) => group.content)
             .join('\n\n');
-        pendingPresetPromptGroups = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
+        // 최종 /generate 본문에서 실제 주입 여부를 확인하고 누락분을 보충하기 위해
+        // depth 0을 포함한 모든 묶음을 전송 직전 훅에 전달한다.
+        pendingPresetPromptGroups = groups;
         if (depthZeroPrompt) {
             getContext().setExtensionPrompt(
                 PROMPT_KEY,
@@ -1689,7 +1726,8 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
         const weaveCount = Number(completePrompt.includes('<ANTI_METAGAMING>'))
             + Number(completePrompt.includes('<CHARACTER_KNOWLEDGE_AND_CONTEXT>'));
         const weaveLabel = weaveCount ? ` + WEAVE ${weaveCount}개` : '';
-        const presetLabel = pendingPresetPromptGroups.length ? ` · 프리셋 위치 ${pendingPresetPromptGroups.length}묶음` : '';
+        const presetCount = groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO).length;
+        const presetLabel = presetCount ? ` · 프리셋 위치 ${presetCount}묶음` : '';
         console.debug(`${LOG_PREFIX} ${analysis.patterns.slice(0, settings.maxInjectedPatterns).length}개 반복 방지 항목${echoLabel}${weaveLabel} 주입${presetLabel}`);
     } catch (error) {
         clearInjectedPrompt();
@@ -1698,10 +1736,10 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
 };
 
 function installPresetPlacementFetchHook() {
-    if (fetchHookInstalled || typeof globalThis.fetch !== 'function') return;
-    fetchHookInstalled = true;
+    if (typeof globalThis.fetch !== 'function') return;
+    if (globalThis.fetch.__ttottoPresetPlacementHook === true) return;
     const originalFetch = globalThis.fetch.bind(globalThis);
-    globalThis.fetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
+    const wrappedFetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
         if (pendingPresetPromptGroups.length
             && String(options?.method ?? '').toUpperCase() === 'POST'
             && typeof options?.body === 'string') {
@@ -1716,18 +1754,27 @@ function installPresetPlacementFetchHook() {
                         const context = getContext();
                         const groups = pendingPresetPromptGroups;
                         pendingPresetPromptGroups = [];
+                        const relativeGroups = groups
+                            .filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO);
                         const result = insertPresetRelativeGroups(
                             body.messages,
-                            groups,
+                            relativeGroups,
                             getPresetPrompts(context),
                             { charName: context?.name2, userName: context?.name1 },
                         );
                         for (const item of result.missing) {
-                            console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 건너뜀`, item);
+                            console.warn(`${LOG_PREFIX} 프리셋 주입 위치를 찾지 못해 답변 직전으로 대체`, item);
                         }
-                        if (result.inserted.length) {
+                        const missingPositions = new Set(result.missing.map((item) => item.position));
+                        const fallbackGroups = groups.filter((group) =>
+                            group.position === PROMPT_POSITION_DEPTH_ZERO || missingPositions.has(group.position));
+                        const appendedKeys = appendGenerationGroups(body.messages, fallbackGroups);
+                        if (result.inserted.length || appendedKeys.length) {
                             options = { ...options, body: JSON.stringify(body) };
-                            console.debug(`${LOG_PREFIX} 프리셋 프롬프트 사이 주입 완료`, result.inserted);
+                            console.debug(`${LOG_PREFIX} 최종 /generate 주입 확인`, {
+                                preset: result.inserted,
+                                depthZeroOrFallback: appendedKeys,
+                            });
                         }
                     }
                 }
@@ -1737,6 +1784,13 @@ function installPresetPlacementFetchHook() {
         }
         return originalFetch(url, options, ...rest);
     };
+    Object.defineProperty(wrappedFetch, '__ttottoPresetPlacementHook', {
+        value: true,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+    });
+    globalThis.fetch = wrappedFetch;
 }
 
 function buildSmartInput(messages) {

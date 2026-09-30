@@ -489,6 +489,32 @@ test('금지어·에코는 서로 다른 프리셋 위치에, WEAVE 두 원본�
     ]);
 });
 
+test('최종 요청에 없는 depth 0·위치 실패 묶음만 답변 직전에 보충하고 중복은 만들지 않는다', async () => {
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' },
+        eventSource: { on() {}, removeListener() {} },
+        extensionSettings: {}, chatMetadata: {}, chat: [], characters: [], groups: [],
+        setExtensionPrompt() {}, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    const module = await import(`../index.js?final-request-fallback=${Date.now()}`);
+    const messages = [
+        { role: 'system', content: '<ttotto_anti_repetition>already present</ttotto_anti_repetition>' },
+        { role: 'user', content: 'Hello' },
+    ];
+    const appended = module.appendGenerationGroups(messages, [
+        { key: 'ban', content: '<ttotto_anti_repetition>new form</ttotto_anti_repetition>' },
+        { key: 'echo', content: '<ttotto_anti_echo>echo rules</ttotto_anti_echo>' },
+        { key: 'weave', content: '<ANTI_METAGAMING>meta</ANTI_METAGAMING>\n\n<CHARACTER_KNOWLEDGE_AND_CONTEXT>character</CHARACTER_KNOWLEDGE_AND_CONTEXT>' },
+    ]);
+    assert.deepEqual(appended, ['echo', 'weave']);
+    assert.equal(messages.length, 3);
+    assert.doesNotMatch(messages.at(-1).content, /ttotto_anti_repetition/);
+    assert.match(messages.at(-1).content, /ttotto_anti_echo/);
+    assert.match(messages.at(-1).content, /ANTI_METAGAMING/);
+    assert.match(messages.at(-1).content, /CHARACTER_KNOWLEDGE_AND_CONTEXT/);
+});
+
 test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 끄기와 이어쓰기를 존중한다', async () => {
     const promptCalls = [];
     const context = {
