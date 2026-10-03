@@ -15,6 +15,7 @@ import {
     normalizeImportantPromptSettings,
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
+import { findHistoryEnd } from './history-position.js';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -27,7 +28,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.8';
+const EXTENSION_VERSION = '1.12.9';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -360,13 +361,17 @@ function injectionGroupAlreadyPresent(messages, group) {
         && combined.includes(marker.replace('<', '</')));
 }
 
-export function appendGenerationGroups(messages, groups) {
+export function appendGenerationGroups(messages, groups, historyPlacement = null) {
     if (!Array.isArray(messages)) return [];
     const missingGroups = (Array.isArray(groups) ? groups : [])
         .filter((group) => String(group?.content ?? '').trim())
         .filter((group) => !injectionGroupAlreadyPresent(messages, group));
     if (!missingGroups.length) return [];
-    messages.push({
+    const index = historyPlacement ? findHistoryEnd(messages, historyPlacement.chat, historyPlacement.names, historyPlacement.snapshot) : null;
+    if (historyPlacement && index === null) {
+        console.warn(`${LOG_PREFIX} depth 0 히스토리 경계 미확인 — 기존 내용은 보존하고 마지막에 보충합니다.`);
+    }
+    messages.splice(index ?? messages.length, 0, {
         role: 'system',
         content: missingGroups.map((group) => String(group.content).trim()).join('\n\n'),
     });
@@ -1909,9 +1914,14 @@ function applyPendingGroupsToFinalMessages(messages, source = 'final-prompt', co
         console.warn(`${LOG_PREFIX} 프리셋 주입 위치 미확인 — 누락된 본문은 답변 직전에 보충`, item);
     }
     const missingPositions = new Set(result.missing.map((item) => item.position));
-    const fallbackGroups = groups.filter((group) =>
-        group.position === PROMPT_POSITION_DEPTH_ZERO || missingPositions.has(group.position));
-    const appendedKeys = appendGenerationGroups(messages, fallbackGroups);
+    // Depth 0 belongs to the chat-history boundary, not the whole request tail.
+    // Keep preset-anchor failure fallback separate from that legacy position.
+    const depthZeroKeys = appendGenerationGroups(messages,
+        groups.filter((group) => group.position === PROMPT_POSITION_DEPTH_ZERO),
+        { chat: context.chat, names: { charName: context.name2, userName: context.name1 }, snapshot: generationChatSnapshot });
+    const fallbackKeys = appendGenerationGroups(messages,
+        groups.filter((group) => group.position !== PROMPT_POSITION_DEPTH_ZERO && missingPositions.has(group.position)));
+    const appendedKeys = [...depthZeroKeys, ...fallbackKeys];
     // SETTINGS_READY is not the actual fetch: retain the plan until that request
     // is serialized, in case another extension rewrites messages in between.
     if (consume) pendingPresetPromptGroups = [];
@@ -2913,7 +2923,7 @@ function renderPromptPositionSelect(elementId, currentValue) {
 
     const depthOption = document.createElement('option');
     depthOption.value = PROMPT_POSITION_DEPTH_ZERO;
-    depthOption.textContent = '답변 직전 (기존 depth 0)';
+    depthOption.textContent = '채팅 히스토리 끝 (기존 depth 0)';
     select.append(depthOption);
 
     if (prompts.length) {
