@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.10';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.10';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.11';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.11';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.10';
+const EXTENSION_VERSION = '1.13.11';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2431,7 +2431,6 @@ async function runSmartAnalysis({ manual = false } = {}) {
         console.error(`${LOG_PREFIX} 정밀 분석 실패`, error);
         state.smart.error = String(error?.message ?? error);
         saveChatState();
-        if (manual) toastr.error(`정밀 분석 실패: ${state.smart.error}`, '🌀또또');
         return false;
     } finally {
         smartRunning = false;
@@ -3928,7 +3927,6 @@ async function handleDragStructureClick() {
         if (ok) registerStructureBan(uuid, { ...analyzed, example });
     } catch (error) {
         console.warn(`${LOG_PREFIX} 구조 분석 실패 — 폴백 등록`, error);
-        toastr.warning(`구조 분석 실패: ${error?.message ?? error}`, '🌀또또');
         const fallback = fallbackStructureBan('example', example);
         const ok = await confirmAction('🌀또또 · 구조 금지 (기본형)', `보조 AI 분석 없이 예시 기반으로 등록할까요?\n\n"${example.slice(0, 120)}"`);
         if (ok) registerStructureBan(uuid, { ...fallback, example });
@@ -3991,7 +3989,6 @@ async function handleDragBanClick() {
         throw new Error('원문에서 대응 표현을 찾지 못했어요.');
     } catch (error) {
         console.warn(`${LOG_PREFIX} 원문 역추적 실패 — 수동 입력 폴백`, error);
-        toastr.warning(`원문 역추적 실패: ${error?.message ?? error}`, '🌀또또');
         const manual = window.prompt(
             `원문 표현을 직접 입력해 주세요 (역추적 실패).\n다른 방법: 메시지의 수정(연필)을 열고 원문에서 드래그하면 바로 등록돼요.\n\n[원문 앞부분]\n${original.slice(0, 700)}`,
             '',
@@ -4374,7 +4371,6 @@ if (events.APP_READY) {
         if (!runtimeActive) return;
         void initialize().catch((error) => {
             console.error(`${LOG_PREFIX} 초기화 실패`, error);
-            toastr.error(`초기화 실패: ${error?.message ?? error}`, '🌀또또');
         });
     });
 } else {
