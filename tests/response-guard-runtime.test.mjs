@@ -12,6 +12,24 @@ const nativeReply = text => new Response(JSON.stringify({ choices: [{ index: 0, 
 const answer = (questions, choice = 'pass', confidence = 0.925, probabilities = { pass: 0.95, violation: 0.04, uncertain: 0.01 }) => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id,
     { type: 'choice', choice, confidence, probabilities }])) }));
 
+test('failed main rewrite returns the retained reply through the installed fetch hook without a popup', async () => {
+    let generations = 0;
+    const env = await setup({}, body => {
+        assert.notEqual(body.model, 'jev-latest');
+        return ++generations === 1 ? nativeReply('His jaw tightened.') : new Response('provider failure', { status: 500 });
+    });
+    const notices = [];
+    for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+    const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened.');
+        assert.equal(generations, 2);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '재작성 실패 · 마지막 답변 표시');
+        assert.deepEqual(notices, []);
+        assert.deepEqual({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated }, snapshot);
+    } finally { env.cleanup(); }
+});
+
 let serial = 0;
 async function setup(overrides = {}, responder = null) {
     const previous = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern, toastr: globalThis.toastr };
@@ -199,10 +217,12 @@ test('saved low confidence cannot trigger a semantic rewrite below 0.95', async 
     } finally { env.cleanup(); }
 });
 
-for (const failure of ['401', 'malformed']) {
+for (const failure of ['401', 'max_tokens_exceeded', 'missing verdict', 'malformed']) {
     test(`main fetch returns the latest reply on Jev ${failure} with no popup or profile changes`, async () => {
         const env = await setup({}, body => body.model === 'jev-latest'
-            ? failure === '401' ? new Response('{}', { status: 401 }) : new Response('{bad json')
+            ? failure === '401' ? new Response('{}', { status: 401 })
+                : failure === 'max_tokens_exceeded' ? new Response(JSON.stringify({ detail: { error_type: failure } }), { status: 400 })
+                    : failure === 'missing verdict' ? new Response('{"answers":{}}') : new Response('{bad json')
             : nativeReply('He opened the door.'));
         const notices = [];
         for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);

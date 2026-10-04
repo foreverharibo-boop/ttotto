@@ -107,16 +107,80 @@ test('semantic violation location is supplied to the model before rechecking its
 });
 
 for (const bad of ['{"patches":[{"id":"S1","text":"fixed"}]}', '```json\n{"patches":[]}\n```']) {
-    test(`obsolete patch response is rejected instead of shown: ${bad.slice(0, 20)}`, async () => {
+    test(`obsolete patch revision falls back to the ordinary original reply: ${bad.slice(0, 20)}`, async () => {
         let calls = 0;
-        await assert.rejects(runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply(bad) }), /전체 수정 답변/);
+        const response = await runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply(bad) });
+        assert.equal((await response.json()).choices[0].message.content, 'jaw.');
         assert.equal(calls, 2);
     });
 }
 
-test('empty complete revision fails rather than falling back to the original draft', async () => {
+test('empty complete revision shows the original draft', async () => {
     let calls = 0;
-    await assert.rejects(runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply('  ') }), /비어/);
+    const response = await runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply('  ') });
+    assert.equal((await response.json()).choices[0].message.content, 'jaw.');
+});
+
+for (const [label, fail] of [
+    ['HTTP 500', () => new Response('provider error', { status: 500 })],
+    ['network failure', () => { throw new TypeError('Failed to fetch'); }],
+    ['unreadable JSON', () => new Response('{bad json')],
+    ['provider error JSON', () => new Response('{"error":{"message":"bad request"}}')],
+    ['tool response', () => new Response('{"choices":[{"message":{"tool_calls":[{}]}}]}')],
+    ['body read failure', () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('read failed')); } }))],
+]) {
+    test(`revision ${label} preserves the latest complete response with no extra request`, async () => {
+        let calls = 0;
+        const statuses = [];
+        const raw = JSON.stringify({ choices: [{ message: { content: 'jaw.', reasoning_content: 'retained' } }], usage: { total_tokens: 17 } });
+        const response = await runResponseGuard({ ...defaults,
+            send: async () => ++calls === 1 ? new Response(raw, { status: 201, headers: { 'X-Draft': 'keep' } }) : fail(),
+            onStatus: status => statuses.push(status),
+        });
+        assert.equal(await response.text(), raw);
+        assert.equal(response.status, 201);
+        assert.equal(response.headers.get('X-Draft'), 'keep');
+        assert.equal(calls, 2);
+        assert.equal(statuses.at(-1).stage, '재작성 실패 · 마지막 답변 표시');
+    });
+}
+
+test('failure of a later revision returns the latest valid draft rather than the first draft', async () => {
+    let calls = 0;
+    const response = await runResponseGuard({ ...defaults, send: async () => {
+        calls++;
+        if (calls === 1) return reply('First jaw.');
+        if (calls === 2) return reply('Latest jaw.');
+        return new Response('failed', { status: 500 });
+    } });
+    assert.equal((await response.json()).choices[0].message.content, 'Latest jaw.');
+    assert.equal(calls, 3);
+});
+
+test('an unexpected local review failure before revision still returns the complete original reply', async () => {
+    const statuses = [];
+    const response = await runResponseGuard({ ...defaults, send: async () => reply('Original reply.'),
+        clean: () => { throw new Error('local review failed'); }, onStatus: status => statuses.push(status) });
+    assert.equal((await response.json()).choices[0].message.content, 'Original reply.');
+    assert.equal(statuses.at(-1).stage, '검수 건너뜀 · 마지막 답변 표시');
+});
+
+test('incomplete revision stream returns the complete original stream byte for byte', async () => {
+    const original = 'data: {"choices":[{"delta":{"content":"jaw."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+    let calls = 0;
+    const response = await runResponseGuard({ ...defaults, body: { ...body, stream: true },
+        send: async () => new Response(++calls === 1 ? original : 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n') });
+    assert.equal(await response.text(), original);
+});
+
+test('user stop during a failed revision never publishes the retained draft', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await assert.rejects(runResponseGuard({ ...defaults, signal: controller.signal, send: async () => {
+        if (++calls === 1) return reply('jaw.');
+        controller.abort();
+        throw new TypeError('network failed while cancelling');
+    } }), { name: 'AbortError' });
 });
 
 test('stop before a revision request prevents both revision and publication', async () => {

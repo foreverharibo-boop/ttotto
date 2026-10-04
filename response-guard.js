@@ -1,5 +1,5 @@
-import { checkAbort } from './jev-client.js';
-import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js';
+import { checkAbort } from './jev-client.js?v=1.13.9';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.9';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -311,70 +311,86 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
     const base = structuredClone(body);
     const reviewJudge = boundedReviewJudge(judge, signal, plan.reviewBudgetMs);
     let next = base;
-    for (let attempt = 0; attempt <= plan.maxRewrites; attempt++) {
-        checkAbort(signal);
-        onStatus({ stage: attempt ? '답변 수정 중' : '답변 작성 중', attempt });
-        const response = await send(next, signal);
-        checkAbort(signal);
-        if (!response.ok) throw new GuardError(`생성 API 오류 (${response.status})로 답변을 표시하지 않았어요.`);
-        const bytes = await bufferResponse(response, signal);
-        const raw = new TextDecoder().decode(bytes);
-        const candidate = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
-        if (typeof candidate !== 'string' || !candidate.trim()) throw new GuardError('텍스트 답변이 비어 있어 검수하지 못했어요.');
-        if (attempt) assertWholeRewrite(candidate);
-        // Inspect the complete model-written reply. No local sentence assembly.
-        const prose = clean(candidate);
-        const deferred = [];
-        let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
-        if (!issues.length) {
-            try {
-                const { state, questions, mapping } = buildGuardQuestions(plan, prose);
-                if (Object.keys(questions).length) {
-                    onStatus({ stage: 'Jev 검수 중', attempt });
-                    const result = await reviewJudge(state, questions);
-                    checkAbort(signal);
-                    issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
+    let latestReply;
+    let activeAttempt = 0;
+    try {
+        for (let attempt = 0; attempt <= plan.maxRewrites; attempt++) {
+            activeAttempt = attempt;
+            checkAbort(signal);
+            onStatus({ stage: attempt ? '답변 수정 중' : '답변 작성 중', attempt });
+            const response = await send(next, signal);
+            checkAbort(signal);
+            if (!response.ok) throw new GuardError(`생성 API 오류 (${response.status})로 답변을 표시하지 않았어요.`);
+            const bytes = await bufferResponse(response, signal);
+            const raw = new TextDecoder().decode(bytes);
+            const candidate = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
+            if (typeof candidate !== 'string' || !candidate.trim()) throw new GuardError('텍스트 답변이 비어 있어 검수하지 못했어요.');
+            if (attempt) assertWholeRewrite(candidate);
+            // Retain only a complete, readable native reply. A failed revision
+            // must not discard an earlier draft or expose partial/invalid bytes.
+            latestReply = { response, bytes, attempt };
+            // Inspect the complete model-written reply. No local sentence assembly.
+            const prose = clean(candidate);
+            const deferred = [];
+            let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
+            if (!issues.length) {
+                try {
+                    const { state, questions, mapping } = buildGuardQuestions(plan, prose);
+                    if (Object.keys(questions).length) {
+                        onStatus({ stage: 'Jev 검수 중', attempt });
+                        const result = await reviewJudge(state, questions);
+                        checkAbort(signal);
+                        issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
+                    }
+                } catch (error) {
+                    return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
                 }
+            }
+            checkAbort(signal);
+            if (!issues.length) {
+                // Replay the accepted model response exactly, including its native
+                // stream frames, reasoning, signatures and usage metadata.
+                onStatus({ stage: deferred.length ? '판정 보류 · 답변 표시' : '검수 통과', attempt,
+                    labels: deferred.map(x => x.label) });
+                checkAbort(signal);
+                return replayModelResponse(response, bytes);
+            }
+            onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
+            checkAbort(signal);
+            if (attempt >= plan.maxRewrites) {
+                onStatus({ stage: '위반 남음 · 마지막 답변 표시', attempt, labels: issues.map(x => x.label),
+                    warning: `수정 요청 한도(${plan.maxRewrites}회)에 도달했어요. 위반이 남은 마지막 답변을 표시해요.` });
+                checkAbort(signal);
+                return replayModelResponse(response, bytes);
+            }
+            onStatus({ stage: '위반 위치 확인 중', attempt });
+            // Rebuild evidence from the latest complete draft every round; IDs
+            // from an earlier, differently worded draft are never reused.
+            const document = createRepairDocument(candidate, clean);
+            let targets;
+            try {
+                targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, reviewJudge, signal, deferred);
             } catch (error) {
                 return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
             }
-        }
-        checkAbort(signal);
-        if (!issues.length) {
-            // Replay the accepted model response exactly, including its native
-            // stream frames, reasoning, signatures and usage metadata.
-            onStatus({ stage: deferred.length ? '판정 보류 · 답변 표시' : '검수 통과', attempt,
-                labels: deferred.map(x => x.label) });
             checkAbort(signal);
-            return replayModelResponse(response, bytes);
+            if (!targets.size) {
+                onStatus({ stage: '위반 위치 미확인 · 마지막 답변 표시', attempt,
+                    labels: issues.map(x => x.label), targetCount: 0 });
+                checkAbort(signal);
+                return replayModelResponse(response, bytes);
+            }
+            onStatus({ stage: '최소 수정 준비', attempt, targetCount: targets.size });
+            next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type);
         }
-        onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
+        throw new GuardError('검수가 완료되지 않았어요.');
+    } catch (error) {
         checkAbort(signal);
-        if (attempt >= plan.maxRewrites) {
-            onStatus({ stage: '위반 남음 · 마지막 답변 표시', attempt, labels: issues.map(x => x.label),
-                warning: `수정 요청 한도(${plan.maxRewrites}회)에 도달했어요. 위반이 남은 마지막 답변을 표시해요.` });
-            checkAbort(signal);
-            return replayModelResponse(response, bytes);
-        }
-        onStatus({ stage: '위반 위치 확인 중', attempt });
-        // Rebuild evidence from the latest complete draft every round; IDs
-        // from an earlier, differently worded draft are never reused.
-        const document = createRepairDocument(candidate, clean);
-        let targets;
-        try {
-            targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, reviewJudge, signal, deferred);
-        } catch (error) {
-            return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
-        }
+        if (error?.name === 'AbortError' || !latestReply) throw error;
+        onStatus({ stage: activeAttempt > latestReply.attempt
+            ? '재작성 실패 · 마지막 답변 표시' : '검수 건너뜀 · 마지막 답변 표시',
+            attempt: activeAttempt, labels: [], targetCount: 0 });
         checkAbort(signal);
-        if (!targets.size) {
-            onStatus({ stage: '위반 위치 미확인 · 마지막 답변 표시', attempt,
-                labels: issues.map(x => x.label), targetCount: 0 });
-            checkAbort(signal);
-            return replayModelResponse(response, bytes);
-        }
-        onStatus({ stage: '최소 수정 준비', attempt, targetCount: targets.size });
-        next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type);
+        return replayModelResponse(latestReply.response, latestReply.bytes);
     }
-    throw new GuardError('검수가 완료되지 않았어요.');
 }
