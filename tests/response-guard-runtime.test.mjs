@@ -9,8 +9,8 @@ function fromMainSender(action) {
 }
 const endpoint = '/api/backends/chat-completions/generate';
 const nativeReply = text => new Response(JSON.stringify({ choices: [{ index: 0, message: { content: text } }] }), { headers: { 'Content-Type': 'application/json' } });
-const answer = questions => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id,
-    { type: 'choice', choice: 'pass', confidence: 0.925, probabilities: { pass: 0.95, violation: 0.04, uncertain: 0.01 } }])) }));
+const answer = (questions, choice = 'pass', confidence = 0.925, probabilities = { pass: 0.95, violation: 0.04, uncertain: 0.01 }) => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id,
+    { type: 'choice', choice, confidence, probabilities }])) }));
 
 let serial = 0;
 async function setup(overrides = {}, responder = null) {
@@ -123,6 +123,55 @@ test('WEAVE alone causes neither Jev evaluation nor hidden regeneration', async 
     try {
         assert.equal(env.module.createResponseGuardPlan(env.body), null);
         await env.send(); assert.equal(env.sent.length, 1);
+    } finally { env.cleanup(); }
+});
+
+for (const [label, choice, confidence, probabilities] of [
+    ['uncertain', 'uncertain', 0.95, { pass: 0.02, violation: 0.03, uncertain: 0.95 }],
+    ['low-confidence violation', 'violation', 0.4, { pass: 0.35, violation: 0.4, uncertain: 0.25 }],
+]) {
+    test(`main fetch shows ${label} reply without error or popup and preserves saved settings`, async () => {
+        const env = await setup({ responseGuardMinConfidence: 0.95 }, body => body.model === 'jev-latest'
+            ? answer(JSON.parse(body.custom_include_body).questions, choice, confidence, probabilities)
+            : nativeReply('He opened the door.'));
+        const notices = [];
+        for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+        const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
+        try {
+            assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+            assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 1);
+            assert.equal(notices.length, 0);
+            const report = env.context.chatMetadata.ttotto.responseGuardReport;
+            assert.equal(report.stage, '판정 보류 · 답변 표시');
+            assert.ok(!report.error);
+            assert.equal(env.context.extensionSettings.ttotto.responseGuardMinConfidence, 0.95);
+            assert.deepEqual(env.context.chat, snapshot.chat);
+            assert.deepEqual(env.context.oaiSettings, snapshot.profile);
+            assert.deepEqual(env.context.extensionSettings.unrelated, snapshot.unrelated);
+            assert.equal(env.stored.get('hundredlog.typesafeKey'), 'untouched-100log-key');
+            assert.equal(env.stored.get(JEV_KEY_STORAGE), 'test-only-ttotto-key');
+        } finally { env.cleanup(); }
+    });
+}
+
+test('main fetch shows an unlocated semantic violation without a revision request or popup', async () => {
+    let checks = 0;
+    const env = await setup({}, body => {
+        if (body.model !== 'jev-latest') return nativeReply('He opened the door.');
+        const questions = JSON.parse(body.custom_include_body).questions;
+        return ++checks === 1
+            ? answer(questions, 'violation', 0.95, { pass: 0.02, violation: 0.95, uncertain: 0.03 })
+            : answer(questions, 'uncertain', 0.95, { pass: 0.02, violation: 0.03, uncertain: 0.95 });
+    });
+    const notices = [];
+    for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(checks, 2);
+        assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 1);
+        assert.equal(notices.length, 0);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '위반 위치 미확인 · 마지막 답변 표시');
+        assert.ok(!env.context.chatMetadata.ttotto.responseGuardReport.error);
     } finally { env.cleanup(); }
 });
 

@@ -108,9 +108,9 @@ export function buildGuardQuestions(plan, candidate) {
         const id = `ban_${i}`;
         questions[id] = {
             type: 'choice',
-            instructions: `${DATA_NOTICE}\nDetermine whether candidate violates this one restriction: ${rule.instruction}\nScope: ${rule.scope}. Return violation only for an actual violation in candidate prose, not because the rule describes a forbidden example.`,
-            criteria: { pass: 'The candidate satisfies this restriction.',
-                violation: 'The candidate actually violates this restriction.',
+            instructions: `${DATA_NOTICE}\nDetermine whether candidate violates this one restriction: ${rule.instruction}\nScope: ${rule.scope}. Use a permissive reading: flag only a clear, directly supported violation of the stated restriction. Apply every stated condition and scope; do not expand the ban to related topics or invent unstated restrictions. Mere resemblance, shared vocabulary, or a possible interpretation is not sufficient unless explicitly forbidden. If evidence is ambiguous, choose uncertain rather than violation. The rule's own forbidden examples are not evidence in candidate prose.`,
+            criteria: { pass: 'No clear violation of this stated restriction appears in the candidate.',
+                violation: 'The candidate clearly violates this restriction within its stated scope and conditions.',
                 uncertain: 'The restriction or evidence is too ambiguous to decide.' },
         };
         mapping[id] = rule;
@@ -132,14 +132,19 @@ export function buildGuardQuestions(plan, candidate) {
     return { state, questions, mapping };
 }
 
-export function readGuardVerdict(result, questions, mapping, minConfidence = 0.7) {
+export function readGuardVerdict(result, questions, mapping, minConfidence = 0.7, deferred = []) {
     const issues = [];
     for (const id of Object.keys(questions)) {
         const answer = result?.answers?.[id];
         if (!answer || answer.type !== 'choice' || !['pass', 'violation', 'uncertain'].includes(answer.choice)
-            || !Number.isFinite(answer.confidence) || answer.confidence < minConfidence
-            || answer.choice === 'uncertain') {
-            throw new GuardError('Jev 판정이 불명확해 답변을 표시하지 않았어요. 규칙을 구체화한 뒤 다시 생성해 주세요.');
+            || !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1) {
+            throw new GuardError('Jev 판정이 누락되거나 형식이 잘못되어 답변을 표시하지 않았어요.');
+        }
+        // Uncertainty is not a confirmed violation or a transport error.
+        // Only sufficiently confident violations may trigger a rewrite.
+        if (answer.choice === 'uncertain' || answer.confidence < minConfidence) {
+            deferred.push(mapping[id]);
+            continue;
         }
         if (answer.choice === 'violation') issues.push({ ...mapping[id], questionId: id });
     }
@@ -148,16 +153,17 @@ export function readGuardVerdict(result, questions, mapping, minConfidence = 0.7
 
 function readLocationAnswer(answer, minConfidence) {
     if (answer?.type !== 'choice' || !Number.isFinite(answer.confidence)
-        || answer.confidence < minConfidence || !['pass', 'violation'].includes(answer.choice)) {
-        throw new GuardError('위반 위치가 불명확해 수정 요청을 중단했어요.');
+        || answer.confidence < 0 || answer.confidence > 1
+        || !['pass', 'violation', 'uncertain'].includes(answer.choice)) {
+        throw new GuardError('위반 위치 판정이 누락되거나 형식이 잘못되었어요.');
     }
-    return answer.choice === 'violation';
+    return answer.choice === 'violation' && answer.confidence >= minConfidence;
 }
 
-export async function locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal) {
+export async function locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal, deferred = []) {
     const units = currentRepairUnits(document, clean).filter(x => x.prose.trim());
-    if (!units.length) throw new GuardError('수정할 문장 위치를 안전하게 나누지 못해 답변을 표시하지 않았어요.');
     const targets = new Map();
+    if (!units.length) { deferred.push(...issues); return targets; }
     const add = (id, rule) => {
         if (!targets.has(id)) targets.set(id, []);
         targets.get(id).push(rule);
@@ -167,7 +173,7 @@ export async function locateRepairTargets(document, issues, plan, clean, exactMa
     for (const issue of issues) {
         if (issue.term && exactMatch(prose, issue.term)) {
             const ids = exactRepairTargets(document, issue, clean, exactMatch);
-            if (!ids.size) throw new GuardError('금지어 위치를 특정하지 못해 수정 요청을 중단했어요.');
+            if (!ids.size) deferred.push(issue);
             ids.forEach(id => add(id, issue));
         } else semantic.push(issue);
     }
@@ -215,7 +221,7 @@ export async function locateRepairTargets(document, issues, plan, clean, exactMa
         }
     }
     await run();
-    if (semantic.some(issue => !found.has(issue))) throw new GuardError('위반 판정은 있었지만 수정할 위치를 특정하지 못해 중단했어요.');
+    deferred.push(...semantic.filter(issue => !found.has(issue)));
     return targets;
 }
 
@@ -254,6 +260,7 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
         if (attempt) assertWholeRewrite(candidate);
         // Inspect the complete model-written reply. No local sentence assembly.
         const prose = clean(candidate);
+        const deferred = [];
         let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
         if (!issues.length) {
             const { state, questions, mapping } = buildGuardQuestions(plan, prose);
@@ -261,14 +268,15 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
                 onStatus({ stage: 'Jev 검수 중', attempt });
                 const result = await judge(state, questions, signal);
                 checkAbort(signal);
-                issues = readGuardVerdict(result, questions, mapping, plan.minConfidence);
+                issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
             }
         }
         checkAbort(signal);
         if (!issues.length) {
             // Replay the accepted model response exactly, including its native
             // stream frames, reasoning, signatures and usage metadata.
-            onStatus({ stage: '검수 통과', attempt });
+            onStatus({ stage: deferred.length ? '판정 보류 · 답변 표시' : '검수 통과', attempt,
+                labels: deferred.map(x => x.label) });
             checkAbort(signal);
             return replayModelResponse(response, bytes);
         }
@@ -284,8 +292,14 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
         // Rebuild evidence from the latest complete draft every round; IDs
         // from an earlier, differently worded draft are never reused.
         const document = createRepairDocument(candidate, clean);
-        const targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal);
+        const targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal, deferred);
         checkAbort(signal);
+        if (!targets.size) {
+            onStatus({ stage: '위반 위치 미확인 · 마지막 답변 표시', attempt,
+                labels: issues.map(x => x.label), targetCount: 0 });
+            checkAbort(signal);
+            return replayModelResponse(response, bytes);
+        }
         onStatus({ stage: '최소 수정 준비', attempt, targetCount: targets.size });
         next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type);
     }

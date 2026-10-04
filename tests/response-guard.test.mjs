@@ -121,15 +121,73 @@ test('echo rejection repairs and rechecks against the same AI-visible user turn'
 });
 
 for (const [label, answer] of [['uncertain', { choice: 'uncertain', confidence: 0.99 }],
-    ['low confidence', { choice: 'pass', confidence: 0.3 }], ['missing', null], ['wrong type', { type: 'noul', noul: 0 }]]) {
+    ['low-confidence pass', { choice: 'pass', confidence: 0.3 }],
+    ['low-confidence violation', { choice: 'violation', confidence: 0.69 }]]) {
+    test(`${label} returns the intact draft without rewriting or claiming a review pass`, async () => {
+        let sends = 0;
+        const statuses = [];
+        const response = await runResponseGuard({ ...base, send: async () => { sends++; return jsonReply('He left.'); },
+            judge: async (_s, qs) => ({ answers: Object.fromEntries(Object.keys(qs).map(id => [id, { type: 'choice', ...answer }])) }),
+            onStatus: status => statuses.push(status),
+        });
+        assert.equal((await response.json()).choices[0].message.content, 'He left.');
+        assert.equal(sends, 1);
+        assert.equal(statuses.at(-1).stage, '판정 보류 · 답변 표시');
+        assert.deepEqual(statuses.at(-1).labels, [rule.label]);
+        assert.ok(!statuses.some(x => x.stage === '검수 통과' || x.warning));
+    });
+}
+
+for (const [label, answer] of [['missing', null], ['wrong type', { type: 'noul', noul: 0 }],
+    ['invalid confidence', { choice: 'pass', confidence: 1.1 }]]) {
     test(`${label} verdict blocks publication without blind rewriting`, async () => {
         let sends = 0;
         await assert.rejects(runResponseGuard({ ...base, send: async () => { sends++; return jsonReply('He left.'); },
             judge: async (_s, qs) => ({ answers: Object.fromEntries(Object.keys(qs).map(id => [id, answer ? { type: 'choice', ...answer } : null])) }),
-        }), /불명확/);
+        }), /누락|형식/);
         assert.equal(sends, 1);
     });
 }
+
+test('an uncertain rule does not prevent repairing a different confirmed violation', async () => {
+    const uncertainRule = { label: 'ambiguous', instruction: 'Avoid something unclear.', scope: 'all' };
+    let sends = 0;
+    const statuses = [];
+    const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [], rules: [rule, uncertainRule] },
+        send: async next => {
+            sends++;
+            if (sends === 2) {
+                const targets = JSON.parse(next.messages.at(-1).content.split('\n').at(-1)).targets;
+                assert.deepEqual(targets.map(x => x.id), ['S1']);
+                assert.ok(!JSON.stringify(targets).includes('something unclear'));
+            }
+            return jsonReply(sends === 1 ? 'Actual violation. Safe.' : 'Fixed. Safe.');
+        },
+        judge: async (state, qs) => {
+            const result = verdict(qs);
+            if (state.units) {
+                result.answers.loc_0_S1.choice = 'violation';
+                result.answers.loc_0_S2.choice = 'uncertain';
+            } else {
+                result.answers.ban_0.choice = sends === 1 ? 'violation' : 'pass';
+                result.answers.ban_1.choice = 'uncertain';
+            }
+            return result;
+        }, onStatus: status => statuses.push(status),
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'Fixed. Safe.');
+    assert.equal(statuses.at(-1).stage, '판정 보류 · 답변 표시');
+    assert.deepEqual(statuses.at(-1).labels, ['ambiguous']);
+});
+
+test('stop on a deferred-verdict status still prevents publishing the draft', async () => {
+    const controller = new AbortController();
+    await assert.rejects(runResponseGuard({ ...base, signal: controller.signal,
+        send: async () => jsonReply('He left.'), judge: async (_s, qs) => verdict(qs, 'uncertain'),
+        onStatus: status => { if (status.stage === '판정 보류 · 답변 표시') controller.abort(); },
+    }), { name: 'AbortError' });
+});
 
 test('Jev error does not fall back to the unreviewed candidate', async () => {
     await assert.rejects(runResponseGuard({ ...base, send: async () => jsonReply('He left.'), judge: async () => { throw new Error('401'); } }), /401/);
@@ -162,6 +220,19 @@ const fixtures = [
     ['cohere', [{ type: 'content-delta', delta: { message: { content: { text: 'He left.' } } } }, { type: 'message-end' }]],
 ];
 for (const [source, events] of fixtures) {
+    test(`${source} uncertain SSE verdict replays the complete native response without rewriting`, async () => {
+        const raw = events.map(e => `data: ${JSON.stringify(e)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
+        let sends = 0;
+        const statuses = [];
+        const response = await runResponseGuard({ ...base, body: { ...body, stream: true, chat_completion_source: source },
+            send: async () => { sends++; return new Response(raw, { headers: { 'Content-Type': 'text/event-stream' } }); },
+            judge: async (_state, qs) => verdict(qs, 'uncertain'), onStatus: status => statuses.push(status),
+        });
+        assert.equal(await response.text(), raw);
+        assert.equal(response.headers.get('content-type'), 'text/event-stream');
+        assert.equal(sends, 1);
+        assert.equal(statuses.at(-1).stage, '판정 보류 · 답변 표시');
+    });
     test(`${source} accepted SSE is buffered and replayed without altering bytes or reasoning`, async () => {
         const raw = events.map(e => `data: ${JSON.stringify(e)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
         assert.equal(extractCandidate(raw, true, source), 'He left.');

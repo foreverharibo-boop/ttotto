@@ -177,19 +177,54 @@ test('honorific abbreviation does not split a normal sentence', () => {
     assert.equal(doc.units[1].text, 'His jaw tightened.');
 });
 
-test('whole-rule violation without any confidently located unit halts before rewriting', async () => {
+test('whole-rule violation without any confidently located unit shows the latest reply without rewriting', async () => {
     let calls = 0;
-    await assert.rejects(runResponseGuard({ ...defaults, plan: { ...plan, terms: [] },
+    const statuses = [];
+    const response = await runResponseGuard({ ...defaults, plan: { ...plan, terms: [] },
         send: async () => { calls++; return reply('Safe. Another sentence.'); },
         judge: async (state, questions) => verdict(questions, () => state.units ? 'pass' : 'violation'),
-    }), /위치/);
+        onStatus: status => statuses.push(status),
+    });
+    assert.equal((await response.json()).choices[0].message.content, 'Safe. Another sentence.');
+    assert.equal(statuses.at(-1).stage, '위반 위치 미확인 · 마지막 답변 표시');
+    assert.ok(!statuses.some(x => x.stage === '검수 통과'));
     assert.equal(calls, 1);
 });
 
-test('uncertain localization halts without modifying any sentence', async () => {
+test('uncertain localization leaves no targets and reports the unresolved rule', async () => {
     const doc = createRepairDocument('Safe. Another sentence.', clean);
+    const deferred = [];
+    const issue = { ...rule, term: '', questionId: 'ban_0' };
+    const targets = await locateRepairTargets(doc, [issue], plan, clean, exactMatch,
+        async (_state, questions) => verdict(questions, () => 'uncertain'), null, deferred);
+    assert.equal(targets.size, 0);
+    assert.deepEqual(deferred, [issue]);
+});
+
+test('low-confidence localization is skipped while another clear target is retained', async () => {
+    const doc = createRepairDocument('First. Second.', clean);
+    const targets = await locateRepairTargets(doc, [{ ...rule, term: '', questionId: 'ban_0' }], plan, clean, exactMatch,
+        async (_state, questions) => {
+            const result = verdict(questions, () => 'violation');
+            result.answers.loc_0_S1.confidence = 0.3;
+            return result;
+        }, null);
+    assert.deepEqual([...targets.keys()], ['S2']);
+});
+
+test('a malformed localization response remains an error rather than an uncertain verdict', async () => {
+    const doc = createRepairDocument('Safe.', clean);
     await assert.rejects(locateRepairTargets(doc, [{ ...rule, term: '', questionId: 'ban_0' }], plan, clean, exactMatch,
-        async (_state, questions) => verdict(questions, () => 'uncertain'), null), /위반 위치가 불명확/);
+        async () => ({ answers: {} }), null), /판정이 누락|형식/);
+});
+
+test('stop on the unlocated-violation status prevents publishing the last reply', async () => {
+    const controller = new AbortController();
+    await assert.rejects(runResponseGuard({ ...defaults, plan: { ...plan, terms: [] }, signal: controller.signal,
+        send: async () => reply('Safe.'),
+        judge: async (state, qs) => verdict(qs, () => state.units ? 'uncertain' : 'violation'),
+        onStatus: status => { if (status.stage === '위반 위치 미확인 · 마지막 답변 표시') controller.abort(); },
+    }), { name: 'AbortError' });
 });
 
 test('semantic localization batches all units across rules without confusing target IDs', async () => {
