@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.2';
+const EXTENSION_VERSION = '1.13.3';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2226,7 +2226,7 @@ function renderResponseGuardReport(report = getChatState(false)?.responseGuardRe
     element.hidden = !report;
     if (report) element.textContent = report.error
         ? `${report.stage} · ${report.error}`
-        : `${report.stage} · 부분 수정 ${report.attempt || 0}회${report.targetCount ? ` · 수정 대상 ${report.targetCount}곳` : ''}${report.labels?.length ? ` · ${report.labels.join(', ')}` : ''}`;
+        : `${report.stage} · 수정 요청 ${report.attempt || 0}회${report.targetCount ? ` · 수정 대상 ${report.targetCount}곳` : ''}${report.labels?.length ? ` · ${report.labels.join(', ')}` : ''}`;
 }
 
 async function guardMainResponse(url, options, rest, body, plan, originalFetch) {

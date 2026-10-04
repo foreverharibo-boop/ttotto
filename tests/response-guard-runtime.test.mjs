@@ -41,7 +41,7 @@ async function setup(overrides = {}, responder = null) {
         sent.push({ body, options, url });
         if (responder) return responder(body, options, sent, context);
         if (body.model === 'jev-latest') return answer(JSON.parse(body.custom_include_body).questions);
-        return nativeReply(++generations === 1 ? 'His jaw tightened.' : JSON.stringify({ patches: [{ id: 'S1', text: 'He opened the door.' }] }));
+        return nativeReply(++generations === 1 ? 'His jaw tightened.' : 'He opened the door.');
     };
     const module = await import(`../index.js?guard-runtime-${++serial}`);
     module.onEnable();

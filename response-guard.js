@@ -1,6 +1,5 @@
 import { checkAbort } from './jev-client.js';
-import { createRepairDocument, assembleRepairDocument, currentRepairUnits,
-    exactRepairTargets, applyRepairPatches, buildPartialRewriteBody, patchNativeResponse } from './partial-repair.js';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -150,7 +149,7 @@ export function readGuardVerdict(result, questions, mapping, minConfidence = 0.7
 function readLocationAnswer(answer, minConfidence) {
     if (answer?.type !== 'choice' || !Number.isFinite(answer.confidence)
         || answer.confidence < minConfidence || !['pass', 'violation'].includes(answer.choice)) {
-        throw new GuardError('위반 위치가 불명확해 원문 전체를 다시 쓰지 않고 중단했어요.');
+        throw new GuardError('위반 위치가 불명확해 수정 요청을 중단했어요.');
     }
     return answer.choice === 'violation';
 }
@@ -163,17 +162,17 @@ export async function locateRepairTargets(document, issues, plan, clean, exactMa
         if (!targets.has(id)) targets.set(id, []);
         targets.get(id).push(rule);
     };
-    const prose = clean(assembleRepairDocument(document));
+    const prose = clean(document.original);
     const semantic = [];
     for (const issue of issues) {
         if (issue.term && exactMatch(prose, issue.term)) {
             const ids = exactRepairTargets(document, issue, clean, exactMatch);
-            if (!ids.size) throw new GuardError('금지어 위치를 특정하지 못해 전체 재작성을 하지 않고 중단했어요.');
+            if (!ids.size) throw new GuardError('금지어 위치를 특정하지 못해 수정 요청을 중단했어요.');
             ids.forEach(id => add(id, issue));
         } else semantic.push(issue);
     }
     if (!semantic.length) return targets;
-    if (units.length > 256) throw new GuardError('의미 위반 위치를 검수할 문장이 너무 많아 전체 재작성 없이 중단했어요.');
+    if (units.length > 256) throw new GuardError('의미 위반 위치를 검수할 문장이 너무 많아 수정 요청을 중단했어요.');
     const full = buildGuardQuestions(plan, prose);
     let pending = [];
     const found = new Set();
@@ -220,35 +219,34 @@ export async function locateRepairTargets(document, issues, plan, clean, exactMa
     return targets;
 }
 
+function assertWholeRewrite(candidate) {
+    // Old clients/models may still return the previous JSON patch format.
+    // Never publish that control object as a character reply.
+    const unfenced = candidate.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    let parsed;
+    try { parsed = JSON.parse(unfenced); } catch { return; }
+    if (parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'patches')) {
+        throw new GuardError('AI가 전체 수정 답변 대신 이전 교체문 형식을 반환해 표시를 중단했어요.');
+    }
+}
+
 export async function runResponseGuard({ body, plan, signal, send, judge, clean, exactMatch, onStatus = () => {} }) {
     checkAbort(signal);
     if (Number(body.n || 1) > 1 || body.request_images) throw new GuardError('검수 모드는 단일 텍스트 답변만 지원해요.');
     const base = structuredClone(body);
     let next = base;
-    let document = null;
-    let initialResponse = null;
-    let initialBytes = null;
-    let initialRaw = '';
-    let pendingTargets = null;
     for (let attempt = 0; attempt <= plan.maxRewrites; attempt++) {
         checkAbort(signal);
-        onStatus({ stage: attempt ? '부분 수정 중' : '답변 작성 중', attempt });
+        onStatus({ stage: attempt ? '답변 수정 중' : '답변 작성 중', attempt });
         const response = await send(next, signal);
         checkAbort(signal);
         if (!response.ok) throw new GuardError(`생성 API 오류 (${response.status})로 답변을 표시하지 않았어요.`);
         const bytes = await bufferResponse(response, signal);
         const raw = new TextDecoder().decode(bytes);
-        const generated = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
-        if (typeof generated !== 'string' || !generated.trim()) throw new GuardError('텍스트 답변이 비어 있어 검수하지 못했어요.');
-        if (!document) {
-            document = createRepairDocument(generated, clean);
-            initialResponse = response; initialBytes = bytes; initialRaw = raw;
-        } else {
-            applyRepairPatches(document, generated, pendingTargets.keys());
-        }
-        const candidate = assembleRepairDocument(document);
-        if (!candidate.trim()) throw new GuardError('부분 수정 뒤 답변 전체가 비어 있어 표시하지 않았어요.');
-        // No clipping: a banned word at the end of a long reply must be checked.
+        const candidate = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
+        if (typeof candidate !== 'string' || !candidate.trim()) throw new GuardError('텍스트 답변이 비어 있어 검수하지 못했어요.');
+        if (attempt) assertWholeRewrite(candidate);
+        // Inspect the complete model-written reply. No local sentence assembly.
         const prose = clean(candidate);
         let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
         if (!issues.length) {
@@ -262,26 +260,23 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
         }
         checkAbort(signal);
         if (!issues.length) {
-            // Only local offsets build the final text. Normal passages come
-            // verbatim from the initial draft, not from a model's whole rewrite.
-            const finalBytes = document.replacements.size
-                ? new TextEncoder().encode(patchNativeResponse(initialRaw, Boolean(base.stream), base.chat_completion_source, candidate))
-                : initialBytes;
-            if (extractCandidate(new TextDecoder().decode(finalBytes), Boolean(base.stream), base.chat_completion_source) !== candidate) {
-                throw new GuardError('부분 수정 결과와 최종 응답 본문이 달라 표시를 중단했어요.');
-            }
-            const headers = new Headers(initialResponse.headers);
+            // Replay the accepted model response exactly, including its native
+            // stream frames, reasoning, signatures and usage metadata.
+            const headers = new Headers(response.headers);
             headers.delete('content-length'); headers.delete('content-encoding'); headers.delete('transfer-encoding');
             onStatus({ stage: '검수 통과', attempt });
-            return new Response(finalBytes, { status: initialResponse.status, statusText: initialResponse.statusText, headers });
+            return new Response(bytes, { status: response.status, statusText: response.statusText, headers });
         }
         onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
-        if (attempt >= plan.maxRewrites) throw new GuardError(`부분 수정 ${plan.maxRewrites}회 후에도 검수 규칙 위반이 남아 답변을 표시하지 않았어요.`);
+        if (attempt >= plan.maxRewrites) throw new GuardError(`수정 요청 ${plan.maxRewrites}회 후에도 검수 규칙 위반이 남아 답변을 표시하지 않았어요.`);
         onStatus({ stage: '위반 위치 확인 중', attempt });
-        pendingTargets = await locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal);
+        // Rebuild evidence from the latest complete draft every round; IDs
+        // from an earlier, differently worded draft are never reused.
+        const document = createRepairDocument(candidate, clean);
+        const targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal);
         checkAbort(signal);
-        onStatus({ stage: '부분 수정 준비', attempt, targetCount: pendingTargets.size });
-        next = buildPartialRewriteBody(base, document, pendingTargets, plan.generationType ?? base.type);
+        onStatus({ stage: '최소 수정 준비', attempt, targetCount: targets.size });
+        next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type);
     }
     throw new GuardError('검수가 완료되지 않았어요.');
 }
