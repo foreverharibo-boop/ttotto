@@ -35,6 +35,7 @@
 
         <div id="ttotto-ban-warning" class="ttotto-ban-warning" hidden></div>
         <div id="ttotto-smart-status" class="ttotto-smart-status" hidden></div>
+        <div id="ttotto-response-guard-status" class="ttotto-smart-status" role="status" hidden></div>
         <div id="ttotto-pattern-list" class="ttotto-pattern-list"></div>
         <div id="ttotto-empty" class="ttotto-empty" hidden>
           <span aria-hidden="true">✨</span>
@@ -119,6 +120,41 @@
           </span>
           <input id="ttotto-ban-prevention-strong" type="checkbox">
         </label>
+
+        <div class="ttotto-guard-settings" role="group" aria-labelledby="ttotto-response-guard-title">
+          <strong id="ttotto-response-guard-title">Jev 표시 전 검수</strong>
+          <label class="ttotto-setting-row" for="ttotto-response-guard-enabled">
+            <span><strong>검수 통과한 답변만 표시</strong><small>금지어·에코만 검사해요. 위반하면 같은 생성 모델에 재작성을 요청하고 다시 확인해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
+            <input id="ttotto-response-guard-enabled" type="checkbox">
+          </label>
+          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-ban">
+            <span><strong>금지어·금지 구조 검수</strong><small>현재 캐릭터에 적용되는 금지어·구조와 실제 주입된 반복 방지 항목을 검사해요.</small></span>
+            <input id="ttotto-response-guard-ban" type="checkbox">
+          </label>
+          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-echo">
+            <span><strong>에코 검수</strong><small>주 생성 요청의 직전 유저 턴과 비교해요. 기존 에코 방지를 꺼두면 이 검사도 쉬어요.</small></span>
+            <input id="ttotto-response-guard-echo" type="checkbox">
+          </label>
+          <label class="ttotto-field" for="ttotto-response-guard-rewrites">
+            <span>최대 재작성 횟수</span>
+            <select id="ttotto-response-guard-rewrites" class="text_pole">
+              <option value="0">0회 · 위반 시 표시 중단</option><option value="1">1회</option><option value="2">2회</option><option value="3">3회</option>
+            </select>
+          </label>
+          <label class="ttotto-field" for="ttotto-response-guard-confidence">
+            <span>최소 판정 확신도</span>
+            <select id="ttotto-response-guard-confidence" class="text_pole">
+              <option value="0.5">0.50</option><option value="0.7">0.70 · 기본</option><option value="0.85">0.85</option><option value="0.95">0.95</option>
+            </select>
+            <small>정답률을 뜻하는 수치는 아니에요. 기준 미달·불명확 판정은 답변을 표시하지 않고 중단해요.</small>
+          </label>
+          <label class="ttotto-field" for="ttotto-jev-key">
+            <span>Jev API 키</span><input id="ttotto-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="또또 전용 키 입력">
+          </label>
+          <div class="ttotto-button-row"><button id="ttotto-jev-connect" class="menu_button" type="button">연결 확인·저장</button><button id="ttotto-jev-delete" class="menu_button" type="button">또또 키 삭제</button></div>
+          <small id="ttotto-jev-key-status" role="status">Jev API 키를 연결해 주세요.</small>
+          <p class="ttotto-guard-note">100LOG와 같은 ST 내장 중계 방식을 사용하며 별도 서버 플러그인은 필요 없어요. 키는 이 브라우저에만 저장하고 다른 확장의 키·연결 프로필은 변경하지 않아요. 연결 확인·검수에는 Jev 비용이, 재작성에는 주 생성 모델 비용이 발생해요. 검사 중에는 스트리밍 본문을 숨기며 통과 후 표시해요. 실패·중지·재작성 한도 초과 시 미통과 답변은 표시하지 않아요. 번역 전 원문을 검사하며 번역기가 나중에 만든 표현은 별도 검사하지 않아요.</p>
+        </div>
 
         <div class="ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
           <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>

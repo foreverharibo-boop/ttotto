@@ -1,10 +1,10 @@
 {
   "name": "ttotto",
-  "version": "1.12.9",
+  "version": "1.13.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check index.js && node --check detector.js && node --check important-prompts.js"
+    "check": "node --check index.js && node --check detector.js && node --check important-prompts.js && node --check jev-client.js && node --check response-guard.js"
   }
 }

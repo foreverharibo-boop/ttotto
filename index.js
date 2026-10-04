@@ -16,9 +16,12 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js';
+import { GuardError, runResponseGuard } from './response-guard.js';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
+const RESPONSE_GUARD_REQUEST = Symbol('ttotto.guard.request');
 
 const MODULE_NAME = 'ttotto';
 const EXTENSION_PATH = 'third-party/ttotto';
@@ -28,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.12.9';
+const EXTENSION_VERSION = '1.13.0';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -56,6 +59,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     echoPreventionEnabled: true,
     echoPreventionStrong: false,
     banPreventionStrong: false,
+    responseGuardEnabled: false,
+    responseGuardBan: true,
+    responseGuardEcho: true,
+    responseGuardMaxRewrites: 2,
+    responseGuardMinConfidence: 0.7,
     metagamingPromptEnabled: false,
     characterAiPromptEnabled: false,
     promptOrder: PROMPT_ORDER_KEYS,
@@ -113,6 +121,7 @@ const preparedPresetContents = new Map();
 const confirmedMainRequests = new Set();
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
+const activeResponseGuards = new Set();
 
 function getContext() {
     return SillyTavern.getContext();
@@ -474,6 +483,13 @@ function getSettings() {
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
+    settings.responseGuardEnabled = Boolean(settings.responseGuardEnabled);
+    settings.responseGuardBan = settings.responseGuardBan !== false;
+    settings.responseGuardEcho = settings.responseGuardEcho !== false;
+    const rewrites = Number(settings.responseGuardMaxRewrites);
+    settings.responseGuardMaxRewrites = Number.isInteger(rewrites) ? Math.max(0, Math.min(3, rewrites)) : 2;
+    const confidence = Number(settings.responseGuardMinConfidence);
+    settings.responseGuardMinConfidence = Number.isFinite(confidence) ? Math.max(0.5, Math.min(0.95, confidence)) : 0.7;
     normalizeImportantPromptSettings(settings);
     settings.promptOrder = normalizePromptOrder(settings.promptOrder);
     settings.banPromptPosition = normalizePromptPosition(settings.banPromptPosition);
@@ -1690,6 +1706,7 @@ function invalidateAnalysis() {
 }
 
 function clearInjectedPrompt() {
+    abortResponseGuards();
     pendingPresetPromptGroups = [];
     mainGenerationActive = false;
     quietGenerationCandidateActive = false;
@@ -2029,6 +2046,11 @@ function activateMainRequest(decision) {
 }
 
 function mainRequestDecision(body, callerStack = '') {
+    // 100LOG and our Jev adapter use this same ST endpoint. They are utility
+    // requests, even if an async stack happens to contain the main sender.
+    if (body?.chat_completion_source === 'custom' && String(body.custom_url ?? '').startsWith(JEV_URL)) {
+        return { eligible: false, reason: 'jev_utility_request', rawType: body.type };
+    }
     const rawType = String(body?.type ?? '').trim().toLocaleLowerCase();
     const callerKind = stGenerationCallerKind(callerStack);
     const mainPath = callerKind === 'main';
@@ -2069,6 +2091,9 @@ export function installPresetPlacementFetchHook() {
     const originalFetch = previousFetch.bind(globalThis);
     const wrappedFetch = async function ttottoPresetPlacementFetch(url, options, ...rest) {
         if (!runtimeActive) return originalFetch(url, options, ...rest);
+        if (options?.[RESPONSE_GUARD_REQUEST]) return originalFetch(url, options, ...rest);
+        let guardedBody = null;
+        let guardedType = null;
         const requestInput = typeof Request !== 'undefined' && url instanceof Request;
         const urlText = typeof url === 'string' ? url : String(url?.url ?? url?.href ?? '');
         if (/\/api\/backends\/chat-completions\/generate(?:[?#]|$)/.test(urlText)
@@ -2083,6 +2108,8 @@ export function installPresetPlacementFetchHook() {
                     const decision = mainRequestDecision(body, callerStack);
                     if (decision.eligible && activateMainRequest(decision)) {
                         const type = decision.type;
+                        guardedBody = body;
+                        guardedType = type;
                         rememberMainRequest(body, decision);
                         preparePendingGroupsFromCurrentChat(type);
                         const expectedGroups = pendingPresetPromptGroups;
@@ -2116,6 +2143,12 @@ export function installPresetPlacementFetchHook() {
                 console.warn(`${LOG_PREFIX} 프리셋 위치 주입 처리 실패`, error);
             }
         }
+        // Deliberately outside the permissive injection catch: a guard failure
+        // must never fall back to displaying the rejected draft.
+        if (guardedBody) {
+            const plan = createResponseGuardPlan(guardedBody, guardedType);
+            if (plan) return guardMainResponse(url, options, rest, guardedBody, plan, originalFetch);
+        }
         return originalFetch(url, options, ...rest);
     };
     Object.defineProperty(wrappedFetch, '__ttottoPresetPlacementHook', {
@@ -2126,6 +2159,125 @@ export function installPresetPlacementFetchHook() {
     });
     markHookOwner(wrappedFetch, previousFetch, FETCH_HOOK_OWNER);
     globalThis.fetch = wrappedFetch;
+}
+
+function readJevKey() {
+    try { return globalThis.localStorage?.getItem(JEV_KEY_STORAGE)?.trim() || ''; }
+    catch { return ''; }
+}
+
+function abortResponseGuards() {
+    for (const controller of activeResponseGuards) controller.abort();
+}
+
+export function createResponseGuardPlan(body, type = observedGenerationType) {
+    const settings = getSettings();
+    const state = getChatState(false);
+    if (!runtimeActive || skipCurrentGeneration || !settings.enabled || !state?.enabled
+        || !settings.responseGuardEnabled || !ALLOWED_GENERATION_TYPES.has(type)) return null;
+    const context = getContext();
+    const activeCharacter = context.characters?.[Number(context.characterId)];
+    const identity = resolveCharacterIdentity({ name: body.char_name || context.name2,
+        original_avatar: activeCharacter?.avatar }, context, settings);
+    const analysis = analyzeCurrentChat(false);
+    const permanent = analysis.patterns.filter(x => x.source === 'pinned');
+    const detected = analysis.patterns.filter(x => x.source !== 'pinned')
+        .slice(0, Math.max(1, Number(settings.maxInjectedPatterns) || 6));
+    const relevant = [...permanent, ...detected].filter(x => !x.characterUuid || x.characterUuid === identity?.uuid);
+    const rules = settings.responseGuardBan ? relevant.map(x => ({
+        label: x.label, instruction: x.instruction,
+        scope: x.kind === 'permanent-term' ? 'all narration and all dialogue'
+            : `${x.scope}${x.speaker ? ` by ${x.speaker}` : ''}`,
+        term: x.kind === 'permanent-term' ? String(x.example ?? '') : '',
+    })).filter(x => x.instruction) : [];
+    const echo = Boolean(type !== 'continue' && settings.responseGuardEcho && settings.echoPreventionEnabled
+        && chatHasUserTurn(context.chat));
+    let userText = '';
+    if (echo) {
+        const evidence = [...generationChatSnapshot, ...captureConversationEvidence(context.chat)]
+            .filter(x => x.role === 'user');
+        // Use what the main AI actually receives, not a translator's profile
+        // request or a last-position user-role jailbreak prompt.
+        const match = [...body.messages].reverse().find(message => message?.role === 'user'
+            && evidence.some(item => {
+                const text = normalizePromptWhitespace(requestMessageText(message));
+                return text === item.text || (context.name1 && text === `${context.name1}: ${item.text}`);
+            }));
+        if (!match) throw new GuardError('AI에 전달된 직전 유저 턴을 확인하지 못해 에코 검수를 중단했어요.');
+        userText = stripNonProse(requestMessageText(match), settings, { clip: false });
+    }
+    if (!rules.length && (!echo || !userText.trim())) return null;
+    return { rules, terms: rules.filter(x => x.term), userText, echo,
+        strongEcho: Boolean(settings.echoPreventionStrong),
+        maxRewrites: settings.responseGuardMaxRewrites,
+        minConfidence: settings.responseGuardMinConfidence,
+        generationType: type,
+        chatIdentity: getChatIdentity(),
+    };
+}
+
+function renderResponseGuardReport(report = getChatState(false)?.responseGuardReport) {
+    if (!uiReady) return;
+    const element = document.getElementById('ttotto-response-guard-status');
+    if (!element) return;
+    element.hidden = !report;
+    if (report) element.textContent = report.error
+        ? `${report.stage} · ${report.error}`
+        : `${report.stage} · 재작성 ${report.attempt || 0}회${report.labels?.length ? ` · ${report.labels.join(', ')}` : ''}`;
+}
+
+async function guardMainResponse(url, options, rest, body, plan, originalFetch) {
+    const controller = new AbortController();
+    const requestSignal = options?.signal ?? (typeof Request !== 'undefined' && url instanceof Request ? url.signal : null);
+    const abort = () => controller.abort();
+    requestSignal?.addEventListener('abort', abort, { once: true });
+    if (requestSignal?.aborted) controller.abort();
+    activeResponseGuards.add(controller);
+    const owner = getChatState(false);
+    const report = { at: Date.now(), stage: '검수 준비', attempt: 0 };
+    const update = (patch) => {
+        Object.assign(report, patch);
+        if (plan.chatIdentity !== getChatIdentity()) return;
+        if (owner) { owner.responseGuardReport = { ...report }; saveChatState(); }
+        renderResponseGuardReport(report);
+        console.info(`${LOG_PREFIX} 표시 전 검수`, { stage: report.stage, attempt: report.attempt });
+    };
+    try {
+        const key = readJevKey();
+        if (!key) throw new GuardError('또또 설정에서 Jev API 키를 먼저 연결해 주세요.');
+        const checkContext = () => {
+            if (!runtimeActive || plan.chatIdentity !== getChatIdentity()
+                || !getSettings().responseGuardEnabled || !getChatState(false)?.enabled) controller.abort();
+            if (controller.signal.aborted) throw new DOMException('또또 검수를 중단했어요.', 'AbortError');
+        };
+        checkContext();
+        const response = await runResponseGuard({
+            body, plan, signal: controller.signal,
+            send: async (next, signal) => {
+                checkContext();
+                return originalFetch(url, { ...options, [RESPONSE_GUARD_REQUEST]: true,
+                    method: 'POST', body: JSON.stringify(next), signal }, ...rest);
+            },
+            judge: async (state, questions, signal) => {
+                checkContext();
+                return requestJev(state, questions, { key, signal,
+                    fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
+            },
+            clean: stripBanCounterText,
+            exactMatch: containsExactBanTerm,
+            onStatus: (patch) => { checkContext(); update(patch); },
+        });
+        checkContext();
+        return response;
+    } catch (error) {
+        const cancelled = controller.signal.aborted || error?.name === 'AbortError';
+        update({ stage: cancelled ? '검수 중단' : '답변 표시 중단', error: cancelled ? '' : String(error.message || '검수 실패') });
+        if (!cancelled) globalThis.toastr?.error?.(report.error, '🌀또또');
+        throw error;
+    } finally {
+        activeResponseGuards.delete(controller);
+        requestSignal?.removeEventListener('abort', abort);
+    }
 }
 
 function buildSmartInput(messages) {
@@ -2981,6 +3133,18 @@ function updateUi(analysisOverride = null) {
     }
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
+    for (const [id, key] of [['ttotto-response-guard-enabled', 'responseGuardEnabled'],
+        ['ttotto-response-guard-ban', 'responseGuardBan'], ['ttotto-response-guard-echo', 'responseGuardEcho']]) {
+        const element = document.getElementById(id);
+        if (element) element.checked = Boolean(settings[key]);
+    }
+    const rewriteSelect = document.getElementById('ttotto-response-guard-rewrites');
+    if (rewriteSelect) rewriteSelect.value = String(settings.responseGuardMaxRewrites);
+    const confidenceSelect = document.getElementById('ttotto-response-guard-confidence');
+    if (confidenceSelect) confidenceSelect.value = String(settings.responseGuardMinConfidence);
+    const keyStatus = document.getElementById('ttotto-jev-key-status');
+    if (keyStatus && !keyStatus.dataset.testing) keyStatus.textContent = readJevKey() ? '이 브라우저에 또또 키가 저장되어 있어요.' : 'Jev API 키를 연결해 주세요.';
+    renderResponseGuardReport();
     const metagamingCheckbox = document.getElementById('ttotto-metagaming-prompt-enabled');
     if (metagamingCheckbox) metagamingCheckbox.checked = Boolean(settings.metagamingPromptEnabled);
     const characterAiCheckbox = document.getElementById('ttotto-character-ai-prompt-enabled');
@@ -3083,6 +3247,7 @@ function bindSetting(id, key, parser = (value) => value) {
         const value = element.type === 'checkbox' ? element.checked : element.value;
         const settings = getSettings();
         settings[key] = parser(value);
+        if (key.startsWith('responseGuard')) abortResponseGuards();
         saveSettings();
         if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
         if (key === 'smartAnalysis') {
@@ -3126,6 +3291,38 @@ function bindUi() {
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
+    bindSetting('ttotto-response-guard-enabled', 'responseGuardEnabled', Boolean);
+    bindSetting('ttotto-response-guard-ban', 'responseGuardBan', Boolean);
+    bindSetting('ttotto-response-guard-echo', 'responseGuardEcho', Boolean);
+    bindSetting('ttotto-response-guard-rewrites', 'responseGuardMaxRewrites', Number);
+    bindSetting('ttotto-response-guard-confidence', 'responseGuardMinConfidence', Number);
+    document.getElementById('ttotto-jev-connect').addEventListener('click', async () => {
+        const input = document.getElementById('ttotto-jev-key');
+        const status = document.getElementById('ttotto-jev-key-status');
+        const button = document.getElementById('ttotto-jev-connect');
+        const key = input.value.trim() || readJevKey();
+        button.disabled = true;
+        status.dataset.testing = 'true';
+        status.textContent = 'Jev 연결 확인 중…';
+        try {
+            await requestJev({ text: 'The sky is blue.' }, { test: { type: 'choice',
+                instructions: 'Does text state that the sky is blue?', criteria: { yes: 'It does.', no: 'It does not.' } } },
+            { key, signal: AbortSignal.timeout(30000), fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
+            globalThis.localStorage.setItem(JEV_KEY_STORAGE, key);
+            input.value = '';
+            status.textContent = 'Jev 연결 확인 완료 · 또또 키 저장됨';
+            globalThis.toastr?.success?.('Jev에 연결됐어요.', '🌀또또');
+        } catch (error) {
+            status.textContent = error?.name === 'TimeoutError' ? '연결 확인 시간이 초과됐어요.' : String(error.message || '연결 실패');
+        } finally { delete status.dataset.testing; button.disabled = false; }
+    });
+    document.getElementById('ttotto-jev-delete').addEventListener('click', () => {
+        try { globalThis.localStorage.removeItem(JEV_KEY_STORAGE); }
+        catch { globalThis.toastr?.error?.('브라우저에서 키 삭제를 허용하지 않았어요.', '🌀또또'); return; }
+        document.getElementById('ttotto-jev-key').value = '';
+        getSettings().responseGuardEnabled = false;
+        abortResponseGuards(); saveSettings(); updateUi();
+    });
     bindSetting('ttotto-metagaming-prompt-enabled', 'metagamingPromptEnabled', Boolean);
     bindSetting('ttotto-character-ai-prompt-enabled', 'characterAiPromptEnabled', Boolean);
     bindSetting('ttotto-ban-prompt-position', 'banPromptPosition', String);
@@ -4151,6 +4348,7 @@ export function onDisable() {
 }
 
 export function onClean() {
+    try { globalThis.localStorage?.removeItem(JEV_KEY_STORAGE); } catch { /* browser policy */ }
     ttottoClosePopup();
     ttottoRemoveWandButton();
     detachPopupEscapeHandler();

@@ -801,3 +801,21 @@
 .ttotto-in-popup .inline-drawer-icon {
     display: none;
 }
+#ttotto-settings .ttotto-guard-settings {
+    margin: 1em 0;
+    padding: 0.8em;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    min-width: 0;
+}
+#ttotto-settings .ttotto-guard-note {
+    font-size: 0.8em;
+    opacity: 0.8;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+#ttotto-settings #ttotto-jev-key {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
