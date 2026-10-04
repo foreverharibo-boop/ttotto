@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.3';
+const EXTENSION_VERSION = '1.13.4';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2268,7 +2268,10 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
             },
             clean: stripBanCounterText,
             exactMatch: containsExactBanTerm,
-            onStatus: (patch) => { checkContext(); update(patch); },
+            onStatus: (patch) => {
+                checkContext(); update(patch);
+                if (patch.warning) globalThis.toastr?.warning?.(patch.warning, '🌀또또');
+            },
         });
         checkContext();
         return response;

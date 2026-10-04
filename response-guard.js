@@ -230,6 +230,12 @@ function assertWholeRewrite(candidate) {
     }
 }
 
+function replayModelResponse(response, bytes) {
+    const headers = new Headers(response.headers);
+    headers.delete('content-length'); headers.delete('content-encoding'); headers.delete('transfer-encoding');
+    return new Response(bytes, { status: response.status, statusText: response.statusText, headers });
+}
+
 export async function runResponseGuard({ body, plan, signal, send, judge, clean, exactMatch, onStatus = () => {} }) {
     checkAbort(signal);
     if (Number(body.n || 1) > 1 || body.request_images) throw new GuardError('검수 모드는 단일 텍스트 답변만 지원해요.');
@@ -262,13 +268,18 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
         if (!issues.length) {
             // Replay the accepted model response exactly, including its native
             // stream frames, reasoning, signatures and usage metadata.
-            const headers = new Headers(response.headers);
-            headers.delete('content-length'); headers.delete('content-encoding'); headers.delete('transfer-encoding');
             onStatus({ stage: '검수 통과', attempt });
-            return new Response(bytes, { status: response.status, statusText: response.statusText, headers });
+            checkAbort(signal);
+            return replayModelResponse(response, bytes);
         }
         onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
-        if (attempt >= plan.maxRewrites) throw new GuardError(`수정 요청 ${plan.maxRewrites}회 후에도 검수 규칙 위반이 남아 답변을 표시하지 않았어요.`);
+        checkAbort(signal);
+        if (attempt >= plan.maxRewrites) {
+            onStatus({ stage: '위반 남음 · 마지막 답변 표시', attempt, labels: issues.map(x => x.label),
+                warning: `수정 요청 한도(${plan.maxRewrites}회)에 도달했어요. 위반이 남은 마지막 답변을 표시해요.` });
+            checkAbort(signal);
+            return replayModelResponse(response, bytes);
+        }
         onStatus({ stage: '위반 위치 확인 중', attempt });
         // Rebuild evidence from the latest complete draft every round; IDs
         // from an earlier, differently worded draft are never reused.

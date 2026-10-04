@@ -46,17 +46,43 @@ test('rewrites do not accumulate old rejected drafts or repair instructions', as
     assert.equal(requests[2].messages.at(-2).content, 'jaw 2');
 });
 
-test('max rewrite exhaustion rejects, without returning any candidate', async () => {
+for (const limit of [0, 1, 2, 3]) {
+    test(`rewrite limit ${limit} returns the latest violating reply with a warning and no extra generation`, async () => {
+        let sends = 0;
+        const statuses = [];
+        const response = await runResponseGuard({ ...base, plan: { ...plan, maxRewrites: limit },
+            send: async () => jsonReply(`jaw draft ${++sends}`), onStatus: status => statuses.push(status) });
+        assert.equal(sends, limit + 1);
+        assert.equal((await response.json()).choices[0].message.content, `jaw draft ${limit + 1}`);
+        assert.equal(statuses.at(-1).stage, '위반 남음 · 마지막 답변 표시');
+        assert.equal(statuses.at(-1).attempt, limit);
+        assert.deepEqual(statuses.at(-1).labels, [rule.label]);
+        assert.equal(statuses.filter(x => x.warning).length, 1);
+        assert.ok(!statuses.some(x => x.stage === '검수 통과'));
+    });
+}
+
+test('semantic violation still remaining at the limit returns the latest revision without locating it again', async () => {
     let sends = 0;
-    await assert.rejects(runResponseGuard({ ...base, send: async () => ++sends === 1 ? jsonReply('jaw') : correctedReply('jaw') }), /수정 요청 2회/);
-    assert.equal(sends, 3);
+    let locations = 0;
+    const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 1 },
+        send: async () => jsonReply(`Violating structure ${++sends}.`),
+        judge: async (state, questions) => {
+            if (state.units) locations++;
+            return verdict(questions, 'violation');
+        },
+    });
+    assert.equal(sends, 2);
+    assert.equal(locations, 1);
+    assert.equal((await response.json()).choices[0].message.content, 'Violating structure 2.');
 });
 
-test('zero rewrites means one attempt, with rejection on violation', async () => {
-    let sends = 0;
-    await assert.rejects(runResponseGuard({ ...base, plan: { ...plan, maxRewrites: 0 },
-        send: async () => { sends++; return jsonReply('jaw'); } }), /수정 요청 0회/);
-    assert.equal(sends, 1);
+test('stop on final warning prevents even an exhausted candidate being published', async () => {
+    const controller = new AbortController();
+    await assert.rejects(runResponseGuard({ ...base, signal: controller.signal,
+        plan: { ...plan, maxRewrites: 0 }, send: async () => jsonReply('jaw'),
+        onStatus: status => { if (status.warning) controller.abort(); },
+    }), { name: 'AbortError' });
 });
 
 test('a forbidden expression beyond the old 8000-character analysis window is checked', async () => {
@@ -146,6 +172,20 @@ for (const [source, events] of fixtures) {
         assert.equal(await response.text(), raw);
         assert.equal(response.headers.get('content-type'), 'text/event-stream');
         assert.equal(response.headers.has('content-length'), false);
+    });
+    test(`${source} violating SSE at the limit is replayed byte for byte with native metadata`, async () => {
+        const raw = events.map(e => `data: ${JSON.stringify(e)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
+        const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 0 },
+            body: { ...body, stream: true, chat_completion_source: source },
+            send: async () => new Response(raw, { status: 201, headers: { 'Content-Type': 'text/event-stream',
+                'X-Generation': 'last', 'content-length': '999', 'content-encoding': 'gzip', 'transfer-encoding': 'chunked' } }),
+            judge: async (_state, questions) => verdict(questions, 'violation'),
+        });
+        assert.equal(await response.text(), raw);
+        assert.equal(response.status, 201);
+        assert.equal(response.headers.get('X-Generation'), 'last');
+        assert.equal(response.headers.get('content-type'), 'text/event-stream');
+        for (const header of ['content-length', 'content-encoding', 'transfer-encoding']) assert.equal(response.headers.has(header), false);
     });
 }
 
