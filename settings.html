@@ -124,16 +124,17 @@
         <div class="ttotto-guard-settings" role="group" aria-labelledby="ttotto-response-guard-title">
           <strong id="ttotto-response-guard-title">Jev 표시 전 검수</strong>
           <label class="ttotto-setting-row" for="ttotto-response-guard-enabled">
-            <span><strong>검수 통과한 답변만 표시</strong><small>금지어·에코만 검사해요. 위반한 문장·구간만 같은 생성 모델에 수정 요청하고, 나머지 원문은 그대로 합쳐 다시 확인해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
+            <span><strong>검수 통과한 답변만 표시</strong><small>금지어·금지 구조와 실제 주입된 반복 방지 항목을 검사해요. 위반한 문장·구간만 같은 생성 모델에 수정 요청하고, 나머지 원문은 그대로 합쳐 다시 확인해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
             <input id="ttotto-response-guard-enabled" type="checkbox">
           </label>
           <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-ban">
             <span><strong>금지어·금지 구조 검수</strong><small>현재 캐릭터에 적용되는 금지어·구조와 실제 주입된 반복 방지 항목을 검사해요.</small></span>
             <input id="ttotto-response-guard-ban" type="checkbox">
           </label>
-          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-echo">
+          <!-- Experimental Jev echo review retained for future use; execution is also gated in index.js. -->
+          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-echo" hidden>
             <span><strong>에코 검수</strong><small>주 생성 요청의 직전 유저 턴과 비교해요. 기존 에코 방지를 꺼두면 이 검사도 쉬어요.</small></span>
-            <input id="ttotto-response-guard-echo" type="checkbox">
+            <input id="ttotto-response-guard-echo" type="checkbox" disabled>
           </label>
           <label class="ttotto-field" for="ttotto-response-guard-rewrites">
             <span>최대 부분 수정 횟수</span>
@@ -157,7 +158,10 @@
         </div>
 
         <div class="ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
-          <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>
+          <div class="ttotto-important-prompts-heading">
+            <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>
+            <small class="ttotto-important-prompts-source">출처 : 공유달글 weave 프리셋</small>
+          </div>
 
           <div class="ttotto-important-prompt-item">
             <div class="ttotto-important-prompt-row">

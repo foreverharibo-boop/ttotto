@@ -101,6 +101,36 @@ test('WEAVE alone causes neither Jev evaluation nor hidden regeneration', async 
     } finally { env.cleanup(); }
 });
 
+test('hidden Jev echo review never runs for an existing enabled preference; normal echo injection stays enabled', async () => {
+    const env = await setup({ globalBans: [], responseGuardEcho: true, echoPreventionEnabled: true });
+    try {
+        assert.equal(env.module.createResponseGuardPlan(env.body), null);
+        await env.send();
+        assert.equal(env.sent.length, 1);
+        assert.equal(env.context.extensionSettings.ttotto.responseGuardEcho, true);
+        assert.equal(env.context.extensionSettings.ttotto.echoPreventionEnabled, true);
+        assert.match(JSON.stringify(env.sent[0].body), /<ttotto_anti_echo>/);
+    } finally { env.cleanup(); }
+});
+
+test('ban guard runs without echo questions or user-turn data even when the hidden preference is true', async () => {
+    const env = await setup({ responseGuardEcho: true, echoPreventionEnabled: true });
+    try {
+        const plan = env.module.createResponseGuardPlan(env.body);
+        assert.equal(plan.echo, false);
+        assert.equal(plan.userText, '');
+        await env.send();
+        const jev = env.sent.filter(x => x.body.model === 'jev-latest');
+        assert.ok(jev.length > 0);
+        for (const call of jev) {
+            const input = JSON.parse(call.body.custom_include_body);
+            assert.ok(!Object.hasOwn(input.questions, 'echo'));
+            assert.equal(input.state.latest_user_turn, '');
+        }
+        assert.equal(env.context.extensionSettings.ttotto.responseGuardEcho, true);
+    } finally { env.cleanup(); }
+});
+
 test('same-endpoint Jev and translator utility requests are forwarded unmodified', async () => {
     const env = await setup();
     try {
@@ -184,8 +214,8 @@ test('ban plan applies current character rules only; continuing does not enable 
         env.context.characters.push({ avatar: 'other.png', name: 'Other' });
         const normal = env.module.createResponseGuardPlan(env.body, 'normal');
         assert.deepEqual(normal.terms.map(x => x.term).sort(), ['globalword', 'ownword']);
-        assert.equal(normal.echo, true);
-        assert.equal(normal.userText, 'I am leaving.');
+        assert.equal(normal.echo, false);
+        assert.equal(normal.userText, '');
         assert.equal(env.module.createResponseGuardPlan(env.body, 'continue').echo, false);
     } finally { env.cleanup(); }
 });

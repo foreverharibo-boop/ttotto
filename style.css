@@ -366,6 +366,19 @@
   padding: 8px 0;
 }
 
+#ttotto-settings .ttotto-important-prompts-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25em 0.7em;
+}
+
+#ttotto-settings .ttotto-important-prompts-source {
+  font-size: 0.72em;
+  font-weight: normal;
+  opacity: 0.7;
+}
+
 #ttotto-settings .ttotto-important-prompts {
   display: grid;
   gap: 4px;

@@ -276,7 +276,7 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             return new Response(finalBytes, { status: initialResponse.status, statusText: initialResponse.statusText, headers });
         }
         onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
-        if (attempt >= plan.maxRewrites) throw new GuardError(`부분 수정 ${plan.maxRewrites}회 후에도 금지어·에코 위반이 남아 답변을 표시하지 않았어요.`);
+        if (attempt >= plan.maxRewrites) throw new GuardError(`부분 수정 ${plan.maxRewrites}회 후에도 검수 규칙 위반이 남아 답변을 표시하지 않았어요.`);
         onStatus({ stage: '위반 위치 확인 중', attempt });
         pendingTargets = await locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal);
         checkAbort(signal);

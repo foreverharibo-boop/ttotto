@@ -31,10 +31,13 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.1';
+const EXTENSION_VERSION = '1.13.2';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
+// Keep the experimental Jev echo code and saved preference for future use,
+// but do not run a hidden feature, including for existing enabled settings.
+const JEV_ECHO_REVIEW_AVAILABLE = false;
 // SillyTavern's stable setExtensionPrompt values: IN_CHAT = 1, SYSTEM = 0.
 // Using getContext() plus these primitive values avoids a fragile direct import from script.js.
 const PROMPT_POSITION_IN_CHAT = 1;
@@ -2190,7 +2193,7 @@ export function createResponseGuardPlan(body, type = observedGenerationType) {
             : `${x.scope}${x.speaker ? ` by ${x.speaker}` : ''}`,
         term: x.kind === 'permanent-term' ? String(x.example ?? '') : '',
     })).filter(x => x.instruction) : [];
-    const echo = Boolean(type !== 'continue' && settings.responseGuardEcho && settings.echoPreventionEnabled
+    const echo = Boolean(JEV_ECHO_REVIEW_AVAILABLE && type !== 'continue' && settings.responseGuardEcho && settings.echoPreventionEnabled
         && chatHasUserTurn(context.chat));
     let userText = '';
     if (echo) {
