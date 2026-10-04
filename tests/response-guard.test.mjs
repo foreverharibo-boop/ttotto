@@ -308,8 +308,14 @@ test('stop on a skipped-review fallback still prevents publication', async () =>
     }), { name: 'AbortError' });
 });
 
-test('a provider error stops before any semantic check or rewrite', async () => {
-    await assert.rejects(runResponseGuard({ ...base, send: async () => new Response('bad', { status: 500 }), judge: () => assert.fail('must not judge') }), /500/);
+test('a provider HTTP error is passed back to ST untouched before any check or rewrite', async () => {
+    const original = new Response('bad', { status: 500, headers: { 'X-Upstream': 'keep' } });
+    const response = await runResponseGuard({ ...base, send: async () => original, judge: () => assert.fail('must not judge') });
+    assert.equal(response, original);
+    assert.equal(response.bodyUsed, false);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get('X-Upstream'), 'keep');
+    assert.equal(await response.text(), 'bad');
 });
 
 test('abort during judgment prevents publication and any following rewrite', async () => {

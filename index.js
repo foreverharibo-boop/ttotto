@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.9';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.9';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.10';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.10';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.9';
+const EXTENSION_VERSION = '1.13.10';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2275,7 +2275,8 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
     } catch (error) {
         const cancelled = controller.signal.aborted || error?.name === 'AbortError';
         update({ stage: cancelled ? '검수 중단' : '답변 표시 중단', error: cancelled ? '' : String(error.message || '검수 실패') });
-        if (!cancelled) globalThis.toastr?.error?.(report.error, '🌀또또');
+        // Generation/guard failures belong in the status report. Do not
+        // duplicate ST/provider errors in a toast under the extension name.
         throw error;
     } finally {
         activeResponseGuards.delete(controller);

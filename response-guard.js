@@ -1,5 +1,5 @@
-import { checkAbort } from './jev-client.js?v=1.13.9';
-import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.9';
+import { checkAbort } from './jev-client.js?v=1.13.10';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.10';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -23,7 +23,9 @@ function textParts(value) {
 }
 
 function assertTextOnly(data) {
-    if (data?.error || data?.type === 'error') throw new GuardError('생성 API가 오류를 반환하여 답변을 표시하지 않았어요.');
+    if (data?.error || data?.type === 'error') {
+        throw Object.assign(new GuardError('생성 API가 오류를 반환했어요.'), { providerError: true });
+    }
     const choices = data?.choices ?? [];
     if (choices.some(x => Number(x.index ?? 0) > 0) || choices.length > 1) {
         throw new GuardError('표시 전 검수는 한 번에 답변 하나만 지원해요. 복수 답변 생성을 꺼 주세요.');
@@ -320,10 +322,29 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             onStatus({ stage: attempt ? '답변 수정 중' : '답변 작성 중', attempt });
             const response = await send(next, signal);
             checkAbort(signal);
-            if (!response.ok) throw new GuardError(`생성 API 오류 (${response.status})로 답변을 표시하지 않았어요.`);
+            if (!response.ok) {
+                if (!latestReply) {
+                    onStatus({ stage: '생성 API 오류 · ST에 전달', attempt });
+                    checkAbort(signal);
+                    // Leave the native failure body, status and headers intact
+                    // so ST handles its provider error without a second toast.
+                    return response;
+                }
+                throw new GuardError('재작성 API 요청이 실패했어요.');
+            }
             const bytes = await bufferResponse(response, signal);
             const raw = new TextDecoder().decode(bytes);
-            const candidate = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
+            let candidate;
+            try {
+                candidate = extractCandidate(raw, Boolean(base.stream), base.chat_completion_source);
+            } catch (error) {
+                if (error?.providerError && !latestReply) {
+                    onStatus({ stage: '생성 API 오류 · ST에 전달', attempt });
+                    checkAbort(signal);
+                    return replayModelResponse(response, bytes);
+                }
+                throw error;
+            }
             if (typeof candidate !== 'string' || !candidate.trim()) throw new GuardError('텍스트 답변이 비어 있어 검수하지 못했어요.');
             if (attempt) assertWholeRewrite(candidate);
             // Retain only a complete, readable native reply. A failed revision

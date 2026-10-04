@@ -31,6 +31,44 @@ test('failed main rewrite returns the retained reply through the installed fetch
 });
 
 let serial = 0;
+
+for (const [label, status, raw, stream] of [
+    ['ST 500 with upstream Vertex 503', 500, '{"error":{"code":503,"message":"Service unavailable","status":"UNAVAILABLE"}}', false],
+    ['HTTP 401', 401, '{"error":{"code":401,"message":"API key not valid"}}', false],
+    ['provider error in successful HTTP response', 200, '{"error":{"message":"provider failure"}}', false],
+    ['provider SSE error', 200, 'data: {"error":{"message":"provider failure"}}\n\n', true],
+]) {
+    test(`${label} reaches ST unchanged without a ttotto error popup or Jev request`, async () => {
+        const original = new Response(raw, { status, headers: { 'X-Provider': 'retain' } });
+        const env = await setup({}, () => original);
+        const notices = [];
+        for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+        const snapshot = structuredClone(env.context.oaiSettings);
+        try {
+            const response = await env.send({ ...env.body, stream });
+            assert.equal(response.status, status);
+            assert.equal(response.headers.get('X-Provider'), 'retain');
+            assert.equal(await response.text(), raw);
+            assert.equal(env.sent.length, 1);
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '생성 API 오류 · ST에 전달');
+            assert.deepEqual(notices, []);
+            assert.deepEqual(env.context.oaiSettings, snapshot);
+        } finally { env.cleanup(); }
+    });
+}
+
+test('main transport failure is propagated without a ttotto error popup', async () => {
+    const failure = new TypeError('Failed to fetch');
+    const env = await setup({}, () => { throw failure; });
+    const notices = [];
+    for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+    try {
+        await assert.rejects(env.send(), error => error === failure);
+        assert.deepEqual(notices, []);
+        assert.equal(env.sent.length, 1);
+    } finally { env.cleanup(); }
+});
+
 async function setup(overrides = {}, responder = null) {
     const previous = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, SillyTavern: globalThis.SillyTavern, toastr: globalThis.toastr };
     const stored = new Map([[JEV_KEY_STORAGE, 'test-only-ttotto-key'], ['hundredlog.typesafeKey', 'untouched-100log-key']]);
