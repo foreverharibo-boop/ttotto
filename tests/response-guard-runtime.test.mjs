@@ -93,21 +93,19 @@ test('guard disabled leaves existing injection and response behavior unchanged',
     } finally { env.cleanup(); }
 });
 
-test('main fetch publishes the latest violating revision after the limit with one warning and intact preset state', async () => {
+test('main fetch publishes the latest violating revision with status only, no popup, and intact preset state', async () => {
     let generations = 0;
     const env = await setup({}, body => {
         assert.notEqual(body.model, 'jev-latest'); // exact violations need no semantic call
         return nativeReply(`His jaw tightened ${++generations}.`);
     });
     const notices = [];
-    globalThis.toastr.warning = (...args) => notices.push(args);
-    globalThis.toastr.error = () => assert.fail('limit warning must not become an error');
+    for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
     try {
         assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened 2.');
         assert.equal(generations, 2);
-        assert.equal(notices.length, 1);
-        assert.match(notices[0][0], /한도\(1회\)/);
+        assert.equal(notices.length, 0);
         const report = env.context.chatMetadata.ttotto.responseGuardReport;
         assert.equal(report.stage, '위반 남음 · 마지막 답변 표시');
         assert.equal(report.attempt, 1);
