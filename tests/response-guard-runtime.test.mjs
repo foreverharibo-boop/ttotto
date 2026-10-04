@@ -19,7 +19,7 @@ async function setup(overrides = {}, responder = null) {
     const listeners = new Map();
     const sent = [];
     const context = {
-        eventTypes: { APP_READY: 'ready', GENERATION_STARTED: 'start', GENERATION_ENDED: 'end', GENERATION_STOPPED: 'stop', CHAT_CHANGED: 'chat' },
+        eventTypes: { APP_READY: 'ready', GENERATION_STARTED: 'start', GENERATION_ENDED: 'end', GENERATION_STOPPED: 'stop', CHAT_CHANGED: 'chat', CHAT_COMPLETION_SETTINGS_READY: 'settings' },
         eventSource: { on(e, fn) { listeners.set(e, fn); }, removeListener(e) { listeners.delete(e); } },
         extensionSettings: { unrelated: { keep: true }, ttotto: { responseGuardEnabled: true, globalBans: ['jaw'], echoPreventionEnabled: false,
             metagamingPromptEnabled: true, characterAiPromptEnabled: true, responseGuardMaxRewrites: 1, ...overrides } },
@@ -174,6 +174,85 @@ test('main fetch shows an unlocated semantic violation without a revision reques
         assert.ok(!env.context.chatMetadata.ttotto.responseGuardReport.error);
     } finally { env.cleanup(); }
 });
+
+test('saved low confidence cannot trigger a semantic rewrite below 0.95', async () => {
+    const env = await setup({ responseGuardMinConfidence: 0.5 }, body => body.model === 'jev-latest'
+        ? answer(JSON.parse(body.custom_include_body).questions, 'violation', 0.94, { pass: 0.03, violation: 0.94, uncertain: 0.03 })
+        : nativeReply('He opened the door.'));
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 1);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '판정 보류 · 답변 표시');
+        assert.equal(env.context.extensionSettings.ttotto.responseGuardMinConfidence, 0.5);
+    } finally { env.cleanup(); }
+});
+
+for (const failure of ['401', 'malformed']) {
+    test(`main fetch returns the latest reply on Jev ${failure} with no popup or profile changes`, async () => {
+        const env = await setup({}, body => body.model === 'jev-latest'
+            ? failure === '401' ? new Response('{}', { status: 401 }) : new Response('{bad json')
+            : nativeReply('He opened the door.'));
+        const notices = [];
+        for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
+        const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
+        try {
+            assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+            assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 1);
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 건너뜀 · 마지막 답변 표시');
+            assert.ok(!env.context.chatMetadata.ttotto.responseGuardReport.error);
+            assert.equal(notices.length, 0);
+            assert.deepEqual(env.context.chat, snapshot.chat);
+            assert.deepEqual(env.context.oaiSettings, snapshot.profile);
+            assert.deepEqual(env.context.extensionSettings.unrelated, snapshot.unrelated);
+        } finally { env.cleanup(); }
+    });
+}
+
+// Reproduce the checked inSTead call chain: generateRevision ->
+// generateQuietPrompt -> Generate(quiet) -> ST chat sender. Both inSTead UI
+// branches call this same quiet generator and then publish its returned text.
+for (const mode of ['on', 'off', 'jev-error']) {
+        test(`inSTead's shared quiet revision generator retains injection with guard ${mode}`, async () => {
+            const enabled = mode !== 'off';
+            const env = await setup({ responseGuardEnabled: enabled, weavePromptPosition: 'preset_after_target' }, mode === 'jev-error'
+                ? body => body.model === 'jev-latest' ? new Response('{}', { status: 401 }) : nativeReply('He opened the door.')
+                : null);
+            const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
+            async function sendOpenAIRequest(payload) {
+                env.listeners.get('settings')(payload);
+                return globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+            }
+            async function sendGenerationRequest(payload) { return await sendOpenAIRequest(payload); }
+            async function finishGenerating(payload) { return await sendGenerationRequest(payload); }
+            async function Generate(type, payload) {
+                env.listeners.get('start')(type, {}, false);
+                await globalThis.ttottoGenerationInterceptor(env.context.chat, 0, () => {}, type);
+                return await finishGenerating(payload);
+            }
+            async function generateQuietPrompt() {
+                return await Generate('quiet', { ...structuredClone(env.body), type: 'quiet' });
+            }
+            async function generateRevision() { return await generateQuietPrompt(); }
+            try {
+                env.listeners.get('end')();
+                const result = await generateRevision();
+                assert.equal((await result.json()).choices[0].message.content, enabled ? 'He opened the door.' : 'His jaw tightened.');
+                const main = env.sent.filter(x => x.body.model === 'original-main');
+                assert.equal(main.length, mode === 'on' ? 2 : 1);
+                assert.equal(env.sent.filter(x => x.body.model === 'jev-latest').length, enabled ? 1 : 0);
+                for (const request of main) {
+                    assert.equal(request.body.type, 'quiet');
+                    assert.match(JSON.stringify(request.body.messages), /<ANTI_METAGAMING>/);
+                    assert.match(JSON.stringify(request.body.messages), /<ttotto_anti_repetition>/);
+                    assert.equal((JSON.stringify(request.body.messages).match(/<ANTI_METAGAMING>/g) ?? []).length, 1);
+                }
+                assert.deepEqual(env.context.chat, snapshot.chat);
+                assert.deepEqual(env.context.oaiSettings, snapshot.profile);
+                assert.deepEqual(env.context.extensionSettings.unrelated, snapshot.unrelated);
+                if (mode === 'jev-error') assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 건너뜀 · 마지막 답변 표시');
+            } finally { env.cleanup(); }
+        });
+}
 
 test('hidden Jev echo review never runs for an existing enabled preference; normal echo injection stays enabled', async () => {
     const env = await setup({ globalBans: [], responseGuardEcho: true, echoPreventionEnabled: true });

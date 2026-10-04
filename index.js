@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.6';
+const EXTENSION_VERSION = '1.13.7';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2146,8 +2146,8 @@ export function installPresetPlacementFetchHook() {
                 console.warn(`${LOG_PREFIX} 프리셋 위치 주입 처리 실패`, error);
             }
         }
-        // Deliberately outside the permissive injection catch: a guard failure
-        // must never fall back to displaying the rejected draft.
+        // Keep review separate from the permissive injection catch. Only the
+        // guard can replay a complete reply after a review failure or deferral.
         if (guardedBody) {
             const plan = createResponseGuardPlan(guardedBody, guardedType);
             if (plan) return guardMainResponse(url, options, rest, guardedBody, plan, originalFetch);

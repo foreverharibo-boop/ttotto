@@ -206,7 +206,7 @@ test('low-confidence localization is skipped while another clear target is retai
     const targets = await locateRepairTargets(doc, [{ ...rule, term: '', questionId: 'ban_0' }], plan, clean, exactMatch,
         async (_state, questions) => {
             const result = verdict(questions, () => 'violation');
-            result.answers.loc_0_S1.confidence = 0.3;
+            result.answers.loc_0_S1.confidence = 0.94;
             return result;
         }, null);
     assert.deepEqual([...targets.keys()], ['S2']);

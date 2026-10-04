@@ -122,7 +122,8 @@ test('echo rejection repairs and rechecks against the same AI-visible user turn'
 
 for (const [label, answer] of [['uncertain', { choice: 'uncertain', confidence: 0.99 }],
     ['low-confidence pass', { choice: 'pass', confidence: 0.3 }],
-    ['low-confidence violation', { choice: 'violation', confidence: 0.69 }]]) {
+    ['low-confidence violation', { choice: 'violation', confidence: 0.69 }],
+    ['structure confidence 0.94', { choice: 'violation', confidence: 0.94 }]]) {
     test(`${label} returns the intact draft without rewriting or claiming a review pass`, async () => {
         let sends = 0;
         const statuses = [];
@@ -140,11 +141,15 @@ for (const [label, answer] of [['uncertain', { choice: 'uncertain', confidence: 
 
 for (const [label, answer] of [['missing', null], ['wrong type', { type: 'noul', noul: 0 }],
     ['invalid confidence', { choice: 'pass', confidence: 1.1 }]]) {
-    test(`${label} verdict blocks publication without blind rewriting`, async () => {
+    test(`${label} Jev verdict shows the complete reply without blind rewriting`, async () => {
         let sends = 0;
-        await assert.rejects(runResponseGuard({ ...base, send: async () => { sends++; return jsonReply('He left.'); },
+        const statuses = [];
+        const response = await runResponseGuard({ ...base, send: async () => { sends++; return jsonReply('He left.'); },
             judge: async (_s, qs) => ({ answers: Object.fromEntries(Object.keys(qs).map(id => [id, answer ? { type: 'choice', ...answer } : null])) }),
-        }), /누락|형식/);
+            onStatus: status => statuses.push(status),
+        });
+        assert.equal((await response.json()).choices[0].message.content, 'He left.');
+        assert.equal(statuses.at(-1).stage, '검수 건너뜀 · 마지막 답변 표시');
         assert.equal(sends, 1);
     });
 }
@@ -189,8 +194,45 @@ test('stop on a deferred-verdict status still prevents publishing the draft', as
     }), { name: 'AbortError' });
 });
 
-test('Jev error does not fall back to the unreviewed candidate', async () => {
-    await assert.rejects(runResponseGuard({ ...base, send: async () => jsonReply('He left.'), judge: async () => { throw new Error('401'); } }), /401/);
+for (const reason of ['401', '429', 'network', 'malformed response']) {
+    test(`Jev ${reason} error returns the complete latest reply with a skipped-review state`, async () => {
+        const statuses = [];
+        const original = jsonReply('He left.');
+        const raw = await original.clone().text();
+        const response = await runResponseGuard({ ...base, send: async () => original,
+            judge: async () => { throw new Error(reason); }, onStatus: status => statuses.push(status) });
+        assert.equal(await response.text(), raw);
+        assert.equal(statuses.at(-1).stage, '검수 건너뜀 · 마지막 답변 표시');
+        assert.ok(!statuses.some(x => x.stage === '검수 통과' || x.warning));
+    });
+}
+
+test('Jev failure after an exact-term correction returns the latest corrected reply', async () => {
+    let sends = 0;
+    const response = await runResponseGuard({ ...base,
+        send: async () => jsonReply(++sends === 1 ? 'His jaw tightened.' : 'He left.'),
+        judge: async () => { throw new Error('Jev unavailable'); },
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'He left.');
+});
+
+test('Jev localization error displays the intact draft without blind rewriting', async () => {
+    let sends = 0;
+    const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [] },
+        send: async () => { sends++; return jsonReply('He left.'); },
+        judge: async (state, qs) => { if (state.units) throw new Error('location failed'); return verdict(qs, 'violation'); },
+    });
+    assert.equal(sends, 1);
+    assert.equal((await response.json()).choices[0].message.content, 'He left.');
+});
+
+test('stop on a skipped-review fallback still prevents publication', async () => {
+    const controller = new AbortController();
+    await assert.rejects(runResponseGuard({ ...base, signal: controller.signal,
+        send: async () => jsonReply('He left.'), judge: async () => { throw new Error('network'); },
+        onStatus: status => { if (status.stage === '검수 건너뜀 · 마지막 답변 표시') controller.abort(); },
+    }), { name: 'AbortError' });
 });
 
 test('a provider error stops before any semantic check or rewrite', async () => {
@@ -232,6 +274,15 @@ for (const [source, events] of fixtures) {
         assert.equal(response.headers.get('content-type'), 'text/event-stream');
         assert.equal(sends, 1);
         assert.equal(statuses.at(-1).stage, '판정 보류 · 답변 표시');
+    });
+    test(`${source} Jev failure replays the complete native SSE response`, async () => {
+        const raw = events.map(e => `data: ${JSON.stringify(e)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
+        const response = await runResponseGuard({ ...base, body: { ...body, stream: true, chat_completion_source: source },
+            send: async () => new Response(raw, { headers: { 'Content-Type': 'text/event-stream' } }),
+            judge: async () => { throw new Error('Jev unavailable'); },
+        });
+        assert.equal(await response.text(), raw);
+        assert.equal(response.headers.get('content-type'), 'text/event-stream');
     });
     test(`${source} accepted SSE is buffered and replayed without altering bytes or reasoning`, async () => {
         const raw = events.map(e => `data: ${JSON.stringify(e)}\r\n\r\n`).join('') + 'data: [DONE]\r\n\r\n';
