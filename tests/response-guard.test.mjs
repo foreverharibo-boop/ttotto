@@ -7,12 +7,85 @@ import { stripNonProse } from '../detector.js';
 const body = { messages: [{ role: 'system', content: 'Original rules' }, { role: 'user', content: 'I am leaving.' }],
     model: 'original-model', type: 'normal', chat_completion_source: 'custom', stream: false, temperature: 0.9 };
 const rule = { term: 'jaw', label: 'jaw ban', instruction: 'Do not use jaw.', scope: 'all' };
-const plan = { rules: [rule], terms: [rule], echo: false, userText: '', maxRewrites: 2, minConfidence: 0.7 };
+const semanticRule = { term: '', label: 'structure ban', instruction: 'Do not describe throwing a cup.', scope: 'all' };
+const plan = { rules: [rule, semanticRule], terms: [rule], echo: false, userText: '', maxRewrites: 2, minConfidence: 0.7 };
 const jsonReply = text => new Response(JSON.stringify({ choices: [{ index: 0, message: { content: text } }], usage: { total_tokens: 8 } }), { headers: { 'Content-Type': 'application/json' } });
 const correctedReply = text => jsonReply(text);
 const verdict = (questions, choice = 'pass', confidence = 0.95) => ({ answers: Object.fromEntries(Object.keys(questions).map(id => [id, { type: 'choice', choice, confidence }])) });
 const base = { body, plan, clean: text => stripNonProse(text, { excludeAllTaggedBlocks: true }, { clip: false }),
     exactMatch: (text, term) => text.includes(term), judge: async (_state, questions) => verdict(questions) };
+
+test('literal-only bans need no Jev calls before or after an exact-term rewrite', async () => {
+    let sends = 0;
+    const response = await runResponseGuard({ ...base, plan: { ...plan, rules: [rule] },
+        send: async () => jsonReply(++sends === 1 ? 'His jaw tightened.' : 'He left.'),
+        judge: async () => assert.fail('literal rules must not be sent to Jev'),
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'He left.');
+});
+
+test('a stalled Jev call that ignores abort cannot indefinitely hide a complete reply', async () => {
+    const statuses = [];
+    let resolveLate;
+    let childSignal;
+    const started = performance.now();
+    const response = await runResponseGuard({ ...base, plan: { ...plan, reviewBudgetMs: 25 },
+        send: async () => jsonReply('He left.'),
+        judge: async (_state, qs, signal) => {
+            childSignal = signal;
+            return new Promise(resolve => { resolveLate = () => resolve(verdict(qs, 'violation')); });
+        }, onStatus: status => statuses.push(status),
+    });
+    assert.ok(performance.now() - started < 1000);
+    assert.equal((await response.json()).choices[0].message.content, 'He left.');
+    assert.equal(childSignal.aborted, true);
+    assert.equal(statuses.at(-1).stage, '검수 대기 초과 · 마지막 답변 표시');
+    const snapshot = structuredClone(statuses);
+    resolveLate();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.deepEqual(statuses, snapshot);
+});
+
+test('whole-review and location calls share a single waiting budget', async () => {
+    let calls = 0;
+    let sends = 0;
+    const response = await runResponseGuard({ ...base,
+        plan: { ...plan, rules: [semanticRule], terms: [], reviewBudgetMs: 100 },
+        send: async () => { sends++; return jsonReply('He left.'); },
+        judge: async (_state, qs, signal) => {
+            if (++calls === 1) { await new Promise(resolve => setTimeout(resolve, 40)); return verdict(qs, 'violation'); }
+            assert.ok(!signal.aborted);
+            await new Promise(resolve => setTimeout(resolve, 80));
+            return verdict(qs, 'violation');
+        },
+    });
+    assert.equal(calls, 2);
+    assert.equal(sends, 1);
+    assert.equal((await response.json()).choices[0].message.content, 'He left.');
+});
+
+test('time spent on main-model generation is excluded from the Jev waiting budget', async () => {
+    let sends = 0;
+    const response = await runResponseGuard({ ...base,
+        plan: { ...plan, rules: [semanticRule], terms: [], reviewBudgetMs: 60, maxRewrites: 1 },
+        send: async () => { await new Promise(resolve => setTimeout(resolve, 75)); return jsonReply(++sends === 1 ? 'Violation.' : 'Safe.'); },
+        judge: async (_state, qs) => verdict(qs, sends === 1 ? 'violation' : 'pass'),
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'Safe.');
+});
+
+test('parent cancellation wins even when the Jev implementation ignores abort', async () => {
+    const controller = new AbortController();
+    let ready;
+    const started = new Promise(resolve => { ready = resolve; });
+    const task = runResponseGuard({ ...base, signal: controller.signal,
+        send: async () => jsonReply('He left.'), judge: async () => { ready(); return new Promise(() => {}); },
+    });
+    const rejected = assert.rejects(task, { name: 'AbortError' });
+    await started; controller.abort(); await rejected;
+});
 
 test('rejected draft stays hidden until a rewritten draft has passed a fresh check', async () => {
     const requests = [];
@@ -134,7 +207,7 @@ for (const [label, answer] of [['uncertain', { choice: 'uncertain', confidence: 
         assert.equal((await response.json()).choices[0].message.content, 'He left.');
         assert.equal(sends, 1);
         assert.equal(statuses.at(-1).stage, '판정 보류 · 답변 표시');
-        assert.deepEqual(statuses.at(-1).labels, [rule.label]);
+        assert.deepEqual(statuses.at(-1).labels, [semanticRule.label]);
         assert.ok(!statuses.some(x => x.stage === '검수 통과' || x.warning));
     });
 }
@@ -340,7 +413,7 @@ test('rewrite preserves other instructions and does not judge WEAVE', () => {
     const { state, questions } = buildGuardQuestions(plan, 'He left.');
     assert.equal('system' in state, false);
     assert.equal('history' in state, false);
-    assert.deepEqual(Object.keys(questions), ['ban_0']);
+    assert.deepEqual(Object.keys(questions), ['ban_1']);
     const original = { ...body, type: 'continue', messages: [...body.messages, { role: 'system', content: '<ANTI_METAGAMING>Original.</ANTI_METAGAMING>' }] };
     const rewritten = buildWholeRewriteBody(original, createRepairDocument('bad draft'), new Map([['S1', [rule]]]));
     assert.equal(rewritten.messages[2].content, original.messages[2].content);

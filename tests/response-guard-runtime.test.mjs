@@ -21,7 +21,7 @@ async function setup(overrides = {}, responder = null) {
     const context = {
         eventTypes: { APP_READY: 'ready', GENERATION_STARTED: 'start', GENERATION_ENDED: 'end', GENERATION_STOPPED: 'stop', CHAT_CHANGED: 'chat', CHAT_COMPLETION_SETTINGS_READY: 'settings' },
         eventSource: { on(e, fn) { listeners.set(e, fn); }, removeListener(e) { listeners.delete(e); } },
-        extensionSettings: { unrelated: { keep: true }, ttotto: { responseGuardEnabled: true, globalBans: ['jaw'], echoPreventionEnabled: false,
+        extensionSettings: { unrelated: { keep: true }, ttotto: { responseGuardEnabled: true, globalBans: ['jaw'], globalStructureBans: [{ label: 'cup throwing', instruction: 'Do not describe throwing a cup.' }], echoPreventionEnabled: false,
             metagamingPromptEnabled: true, characterAiPromptEnabled: true, responseGuardMaxRewrites: 1, ...overrides } },
         chatMetadata: { ttotto: { enabled: true, banOffenseVersion: 3, smart: { patterns: [], messageKeys: [] } } },
         chatId: 'guard-runtime', characterId: 0, characters: [{ avatar: 'peter.png', name: 'Peter' }], groups: [],
@@ -72,7 +72,7 @@ test('actual main fetch returns only accepted reply, preserving profile, chat an
         assert.equal(jev[0].body.chat_completion_source, 'custom');
         const evaluated = JSON.parse(jev[0].body.custom_include_body);
         assert.doesNotMatch(JSON.stringify(evaluated), /<ANTI_METAGAMING>|<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
-        assert.deepEqual(Object.keys(evaluated.questions), ['ban_0']);
+        assert.deepEqual(Object.keys(evaluated.questions), ['ban_1']);
         assert.match(JSON.stringify(generations[0].body), /<ANTI_METAGAMING>/);
         assert.match(JSON.stringify(generations[1].body), /<CHARACTER_KNOWLEDGE_AND_CONTEXT>/);
         assert.equal(generations[1].body.temperature, 0.83);
@@ -90,6 +90,18 @@ test('guard disabled leaves existing injection and response behavior unchanged',
         assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened.');
         assert.equal(env.sent.length, 1);
         assert.match(JSON.stringify(env.sent[0].body), /<ANTI_METAGAMING>/);
+    } finally { env.cleanup(); }
+});
+
+test('main fetch with only literal bans completes the correction with zero Jev requests', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    const snapshot = structuredClone(env.context.oaiSettings);
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.filter(x => x.body.model === 'jev-latest').length, 0);
+        assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 2);
+        assert.deepEqual(env.context.oaiSettings, snapshot);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
     } finally { env.cleanup(); }
 });
 
@@ -119,7 +131,7 @@ test('main fetch publishes the latest violating revision with status only, no po
 });
 
 test('WEAVE alone causes neither Jev evaluation nor hidden regeneration', async () => {
-    const env = await setup({ globalBans: [], responseGuardBan: true, responseGuardEcho: false });
+    const env = await setup({ globalBans: [], globalStructureBans: [], responseGuardBan: true, responseGuardEcho: false });
     try {
         assert.equal(env.module.createResponseGuardPlan(env.body), null);
         await env.send(); assert.equal(env.sent.length, 1);
@@ -255,7 +267,7 @@ for (const mode of ['on', 'off', 'jev-error']) {
 }
 
 test('hidden Jev echo review never runs for an existing enabled preference; normal echo injection stays enabled', async () => {
-    const env = await setup({ globalBans: [], responseGuardEcho: true, echoPreventionEnabled: true });
+    const env = await setup({ globalBans: [], globalStructureBans: [], responseGuardEcho: true, echoPreventionEnabled: true });
     try {
         assert.equal(env.module.createResponseGuardPlan(env.body), null);
         await env.send();

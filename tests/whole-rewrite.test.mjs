@@ -236,11 +236,14 @@ test('semantic localization batches all units across rules without confusing tar
     const targets = await locateRepairTargets(doc, rules.map((r, i) => ({ ...r, questionId: `ban_${i}` })),
         { ...plan, rules }, clean, exactMatch, async (_state, questions) => {
             sizes.push(Object.keys(questions).length);
+            assert.ok(JSON.stringify({ state: _state, questions }).length <= 60000);
+            assert.ok(Object.values(_state.restrictions).some(text => text.includes(rules[0].instruction)));
+            assert.ok(Object.values(questions).every(q => q.instructions.includes('state.restrictions.R')));
             for (const id of Object.keys(questions)) { assert.ok(!seen.has(id)); seen.add(id); }
             return verdict(questions, id => ['loc_0_S2', 'loc_1_S35'].includes(id) ? 'violation' : 'pass');
         }, null);
     assert.equal(seen.size, 80);
-    assert.ok(sizes.length > 1 && sizes.every(size => size <= 24));
+    assert.ok(sizes.length < 4 && sizes.every(size => size <= 96));
     assert.deepEqual([...targets.keys()], ['S2', 'S35']);
 });
 
