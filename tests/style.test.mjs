@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('또또 체크박스는 실리 강조 색상과 흰 체크를 사용하고 다른 확장에는 번지지 않는다', async () => {
+test('또또 체크박스는 실리 본문·배경 색상으로 대비를 유지하고 다른 확장에는 번지지 않는다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     assert.match(css, /#ttotto-settings input\[type="checkbox"\]:checked/);
-    assert.match(css, /background-color:\s*var\(--SmartThemeQuoteColor,\s*#666\)\s*!important/);
-    assert.match(css, /stroke='%23fff'/);
-    assert.match(css, /background-color:\s*#fff\s*!important/);
+    assert.match(css, /background-color:\s*var\(--SmartThemeBodyColor,\s*#666\)\s*!important/);
+    assert.match(css, /:checked::after/);
+    assert.match(css, /mask: url/);
+    assert.match(css, /background-color:\s*var\(--SmartThemeBlurTintColor,\s*#fff\)\s*!important/);
     assert.doesNotMatch(css, /(?:^|\n)\s*input\[type="checkbox"\](?![^\n]*#ttotto-settings)/);
 });
 
@@ -37,7 +38,7 @@ test('위반 기록과 긴 금지어 행은 모바일에서도 넘치지 않는�
 test('선택한 탭 버튼 자체에만 활성 테두리가 생긴다', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
-    assert.match(css, /#ttotto-settings \.ttotto-tab\.is-active \{[\s\S]*?border-color:\s*rgba\(150,\s*150,\s*150,\s*0\.48\)/);
+    assert.match(css, /#ttotto-settings \.ttotto-tab\.is-active \{[\s\S]*?border-color:\s*var\(--SmartThemeBorderColor, currentColor\)/);
     assert.match(css, /#ttotto-settings \.ttotto-tab\.is-active \{[\s\S]*?background:\s*transparent\s*!important/);
     assert.match(css, /#ttotto-settings \.ttotto-tab:not\(\.is-active\) \{[\s\S]*?box-shadow:\s*none|#ttotto-settings \.ttotto-tab \{[\s\S]*?box-shadow:\s*none/);
     assert.match(js, /button\.classList\.toggle\('is-active', active\)/);
@@ -157,3 +158,4 @@ test('드래그 표현·구조 메뉴는 설정에서 켜고 끌 수 있다', as
     assert.match(js, /function syncDragBanHandlers\(settings = getSettings\(\)\)[\s\S]*?settings\.dragBanMenuEnabled[\s\S]*?attachDragBanHandlers\(\)[\s\S]*?detachDragBanHandlers\(\)/);
     assert.match(js, /function attachDragBanHandlers\(\)[\s\S]*?!getSettings\(\)\.dragBanMenuEnabled/);
 });
+

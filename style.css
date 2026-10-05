@@ -58,16 +58,16 @@
   -webkit-appearance: none !important;
   appearance: none !important;
   display: inline-block !important;
-  position: static !important;
+  position: relative !important;
   width: 18px !important;
   min-width: 18px !important;
   height: 18px !important;
   min-height: 18px !important;
   margin: 0 !important;
   padding: 0 !important;
-  border: 2px solid #555 !important;
+  border: 2px solid var(--SmartThemeBodyColor, #555) !important;
   border-radius: 4px !important;
-  background-color: #fff !important;
+  background-color: var(--SmartThemeBlurTintColor, #fff) !important;
   background-image: none !important;
   box-shadow: none !important;
   filter: none !important;
@@ -82,12 +82,17 @@
 }
 
 #ttotto-settings input[type="checkbox"]:checked {
-  border-color: var(--SmartThemeQuoteColor, #666) !important;
-  background-color: var(--SmartThemeQuoteColor, #666) !important;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8l3 3 7-7' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
-  background-size: 14px 14px !important;
+  border-color: var(--SmartThemeBodyColor, #666) !important;
+  background-color: var(--SmartThemeBodyColor, #666) !important;
+  background-image: none !important;
+}
+
+#ttotto-settings input[type="checkbox"]:checked::after {
+  content: "" !important;
+  position: absolute;
+  inset: 0;
+  background: var(--SmartThemeBlurTintColor, #fff);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8l3 3 7-7' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
 }
 
 #ttotto-settings input[type="checkbox"]:focus-visible {
@@ -118,7 +123,7 @@
 }
 
 #ttotto-settings .ttotto-tab.is-active {
-  border-color: rgba(150, 150, 150, 0.48) !important;
+  border-color: var(--SmartThemeBorderColor, currentColor) !important;
   background: transparent !important;
   box-shadow: none !important;
 }
@@ -325,8 +330,8 @@
 #ttotto-settings .ttotto-ban-warning {
   margin: 8px 0;
   padding: 8px 10px;
-  border-left: 3px solid #e7a424;
-  background: color-mix(in srgb, #e7a424 15%, transparent);
+  border-left: 3px solid var(--SmartThemeQuoteColor, currentColor);
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 15%, transparent);
   font-size: 0.9em;
 }
 
@@ -342,9 +347,9 @@
   gap: 3px;
   margin: 10px 0;
   padding: 9px 10px;
-  border-left: 3px solid #e7a424;
+  border-left: 3px solid var(--SmartThemeQuoteColor, currentColor);
   border-radius: 0 8px 8px 0;
-  background: color-mix(in srgb, #e7a424 10%, transparent);
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 10%, transparent);
 }
 
 #ttotto-settings .ttotto-offense-guide small {
@@ -633,9 +638,9 @@
   align-items: center;
   min-height: 1.55em;
   padding: 0.1em 0.5em;
-  border: 1px solid color-mix(in srgb, #e7a424 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 52%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, #e7a424 13%, transparent);
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 13%, transparent);
   font-size: 0.76em;
   line-height: 1.1;
   white-space: nowrap;
@@ -695,7 +700,7 @@
 }
 
 @keyframes ttotto-message-flash {
-  0%, 35% { box-shadow: inset 0 0 0 3px #e7a424; }
+  0%, 35% { box-shadow: inset 0 0 0 3px var(--SmartThemeQuoteColor, currentColor); }
   100% { box-shadow: inset 0 0 0 0 transparent; }
 }
 
@@ -832,3 +837,4 @@
     width: 100%;
     box-sizing: border-box;
 }
+

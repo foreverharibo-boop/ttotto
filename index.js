@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.11';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.11';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.12';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.12';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.11';
+const EXTENSION_VERSION = '1.13.12';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -3570,12 +3570,12 @@ const DRAG_AI_MAX_TOKENS = 20000;
 const DRAG_BAN_MENU_CSS = [
     'position:fixed !important', 'z-index:99999 !important', 'transform:none !important',
     'display:flex', 'gap:4px', 'padding:4px', 'border-radius:999px',
-    'border:1px solid rgba(255,255,255,0.25)', 'background-color:#2b2b34',
+    'border:1px solid var(--SmartThemeBorderColor, currentColor)', 'background-color:var(--SmartThemeBlurTintColor, #2b2b34)',
     'box-shadow:0 4px 14px rgba(0,0,0,0.45)', 'user-select:none', '-webkit-user-select:none',
 ].join('; ');
 const DRAG_BAN_CHIP_CSS = [
     'padding:5px 10px', 'border-radius:999px', 'border:none', 'background:transparent',
-    'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer', 'white-space:nowrap',
+    'color:var(--SmartThemeBodyColor, #fff)', 'font-size:13px', 'line-height:1', 'cursor:pointer', 'white-space:nowrap',
     'touch-action:manipulation',
 ].join('; ');
 
@@ -4044,7 +4044,7 @@ const TTOTTO_POPUP_BOX_CSS = [
     'margin:0 auto !important', 'transform:none !important',
     'background-color:var(--SmartThemeBlurTintColor, #1b1b22) !important',
     'color:var(--SmartThemeBodyColor, #ddd) !important',
-    'border:1px solid rgba(128,128,128,0.35) !important',
+    'border:1px solid var(--SmartThemeBorderColor, currentColor) !important',
     'box-shadow:0 16px 40px rgba(0,0,0,0.4) !important',
 ].join('; ');
 
@@ -4102,7 +4102,7 @@ function ttottoOpenPopup() {
     overlay.style.cssText = `display:flex !important; ${TTOTTO_OVERLAY_BASE_CSS}`;
     box.style.cssText = TTOTTO_POPUP_BOX_CSS;
     const header = box.querySelector('.ttotto-popup-header');
-    if (header) header.style.cssText = 'display:flex !important; align-items:center !important; justify-content:space-between !important; gap:8px !important; padding:10px 14px !important; border-bottom:1px solid rgba(128,128,128,0.25) !important; flex-shrink:0 !important;';
+    if (header) header.style.cssText = 'display:flex !important; align-items:center !important; justify-content:space-between !important; gap:8px !important; padding:10px 14px !important; border-bottom:1px solid var(--SmartThemeBorderColor, currentColor) !important; flex-shrink:0 !important;';
     const body = document.getElementById('ttotto-popup-body');
     if (body) body.style.cssText = 'box-sizing:border-box !important; width:100% !important; min-width:0 !important; max-width:100% !important; overflow-y:auto !important; overflow-x:hidden !important; overscroll-behavior-x:none !important; touch-action:pan-y !important; padding:8px 14px 14px !important; -webkit-overflow-scrolling:touch;';
     popupOpen = true;
@@ -4376,3 +4376,4 @@ if (events.APP_READY) {
 } else {
     void initialize().catch((error) => console.error(`${LOG_PREFIX} 초기화 실패`, error));
 }
+
