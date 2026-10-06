@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.13';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.13';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.14';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.14';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.13';
+const EXTENSION_VERSION = '1.13.14';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -706,12 +706,12 @@ export function containsExactBanTerm(text, rawTerm) {
     const endsWithWord = /[\p{L}\p{N}_]$/u.test(term);
     const endsWithHangul = /[가-힣]$/u.test(term);
     const prefix = startsWithWord ? '(^|[^\\p{L}\\p{N}_])' : '';
-    // Korean particles attach without spaces. Count the registered noun plus
-    // a normal particle as the same visible expression, but reject unrelated
-    // compounds. Latin terms stay strict: anchor does not match anchored.
-    const koreanParticle = '(?:이라고|이라고는|이라도|이라며|이라면|처럼|에서|에게|으로|부터|까지|보다|하고|이나|이며|이고|인듯|인양|은|는|이|가|을|를|의|에|께|로|와|과|도|만|조차|마저|랑|야|아|나|라|들)?';
+    // A Korean literal ban also covers Hangul attached on the right: compounds,
+    // plural forms and stacked particles (사내새끼들은, 굳은살로는). Do not
+    // whitelist individual particles; that leaves ordinary combinations out.
+    // Keep the left boundary, and keep Latin terms strict (jaw != jawline).
     const suffix = endsWithHangul
-        ? `${koreanParticle}(?=$|[^\\p{L}\\p{N}_])`
+        ? '[가-힣]*(?=$|[^\\p{L}\\p{N}_])'
         : endsWithWord ? '(?=$|[^\\p{L}\\p{N}_])' : '';
     return new RegExp(`${prefix}(?:${expression})${suffix}`, 'iu').test(normalizedText);
 }

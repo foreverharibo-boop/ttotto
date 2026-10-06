@@ -9,7 +9,7 @@ function fromMainSender(action) {
     return sendGenerationRequest();
 }
 
-test('금지어는 독립된 실제 표현일 때만 일치한다', async () => {
+test('한국어 금지어는 뒤에 붙은 표현까지 감지하고 영어 단어 경계는 유지한다', async () => {
     const context = {
         eventTypes: { APP_READY: 'app_ready' },
         eventSource: { on() {}, removeListener() {} },
@@ -27,6 +27,17 @@ test('금지어는 독립된 실제 표현일 때만 일치한다', async () => 
     assert.equal(module.containsExactBanTerm('A SHIVERS   DOWN HER SPINE reaction.', 'shivers down her spine'), true);
     assert.equal(module.containsExactBanTerm('포식자가 다가왔다.', '포식자'), true);
     assert.equal(module.containsExactBanTerm('포식자처럼 다가왔다.', '포식자'), true);
+    for (const text of ['사내', '사내는', '사내놈', '사내새끼', '사내놈이', '사내새끼들은', '사내들은', '사내에게서는', '사내놈이라고는']) {
+        assert.equal(module.containsExactBanTerm(`그 ${text} 문을 열었다.`, '사내'), true, text);
+    }
+    for (const text of ['굳은살이', '굳은살로는', '굳은살투성이인', '굳은살에서부터도']) {
+        assert.equal(module.containsExactBanTerm(text, '굳은살'), true, text);
+    }
+    assert.equal(module.containsExactBanTerm('그 거친   사내새끼가 왔다.', '거친 사내'), true);
+    assert.equal(module.containsExactBanTerm('사내새끼가'.normalize('NFD'), '사내'), true);
+    assert.equal(module.containsExactBanTerm('회사내에서 만났다.', '사내'), false);
+    assert.equal(module.containsExactBanTerm('사내용품', '내용'), false);
+    assert.equal(module.containsExactBanTerm('사내ABC', '사내'), false);
     assert.equal(
         module.stripBanCounterText('<thinking>청년을 피해야 한다.</thinking><status>청년</status>그는 문을 닫았다.'),
         '그는 문을 닫았다.',

@@ -32,6 +32,31 @@ test('failed main rewrite returns the retained reply through the installed fetch
 
 let serial = 0;
 
+for (const [term, draft] of [
+    ['사내', '사내놈이 문을 열었다.'],
+    ['사내', '사내새끼들은 문을 열었다.'],
+    ['굳은살', '굳은살로는 설명할 수 없었다.'],
+]) {
+    test(`Korean attached expression is located and rewritten without a Jev call: ${draft}`, async () => {
+        let calls = 0;
+        const env = await setup({ globalBans: [term], globalStructureBans: [] }, body => {
+            assert.notEqual(body.model, 'jev-latest');
+            if (++calls === 1) return nativeReply(`주변은 조용했다. ${draft}`);
+            const targets = JSON.parse(body.messages.at(-1).content.split('\n').at(-1)).targets;
+            assert.equal(targets.length, 1);
+            assert.equal(targets[0].text, draft);
+            return nativeReply('주변은 조용했다. 그는 잠시 멈췄다.');
+        });
+        try {
+            const result = await (await env.send()).json();
+            assert.equal(result.choices[0].message.content, '주변은 조용했다. 그는 잠시 멈췄다.');
+            assert.equal(calls, 2);
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+        } finally { env.cleanup(); }
+    });
+}
+
 test('streaming main sender without a finishGenerating frame still reviews and repairs its reply', async () => {
     let calls = 0;
     const env = await setup({ globalStructureBans: [] }, () => {
