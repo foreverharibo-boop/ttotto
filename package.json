@@ -1,6 +1,6 @@
 {
   "name": "ttotto",
-  "version": "1.13.12",
+  "version": "1.13.13",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,4 +8,3 @@
     "check": "node --check index.js && node --check detector.js && node --check important-prompts.js && node --check jev-client.js && node --check response-guard.js && node --check rewrite-targets.js"
   }
 }
-

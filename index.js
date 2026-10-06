@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.12';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.12';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.13';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.13';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.12';
+const EXTENSION_VERSION = '1.13.13';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -122,6 +122,7 @@ let quietGenerationCandidateActive = false;
 let generationChatSnapshot = [];
 const preparedPresetContents = new Map();
 const confirmedMainRequests = new Set();
+const confirmedMainPayloads = new Set();
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
 const activeResponseGuards = new Set();
@@ -1717,6 +1718,7 @@ function clearInjectedPrompt() {
     generationChatSnapshot = [];
     preparedPresetContents.clear();
     confirmedMainRequests.clear();
+    confirmedMainPayloads.clear();
     const promptsToClear = [
         [PROMPT_KEY, 0],
         [LEGACY_METAGAMING_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
@@ -2007,7 +2009,7 @@ function stGenerationCallerKind(stack) {
     // the async stack. A nested raw helper can have a main Generate farther up.
     for (const frame of frames.slice(senderIndex + 1)) {
         if (/\b(?:generateRawData|generateRaw|generateQuietPrompt|processRequest|sendRequest)\b|custom-request\.js/.test(frame)) return 'auxiliary';
-        if (/\b(?:sendGenerationRequest|finishGenerating)\b/.test(frame)) return 'main';
+        if (/\b(?:sendGenerationRequest|sendStreamingRequest|finishGenerating)\b/.test(frame)) return 'main';
     }
     return 'unknown';
 }
@@ -2016,17 +2018,35 @@ export function isStMainGenerationCall(stack) {
     return stGenerationCallerKind(stack) === 'main';
 }
 
+function captureRequestStack() {
+    // Chromium's default ten frames can end inside extension middleware, before
+    // the ST sender. Expand only this synchronous capture, then restore it.
+    const previousLimit = Error.stackTraceLimit;
+    try {
+        if (typeof previousLimit === 'number') Error.stackTraceLimit = Math.max(previousLimit, 64);
+        return new Error().stack ?? '';
+    } finally {
+        if (typeof previousLimit === 'number') Error.stackTraceLimit = previousLimit;
+    }
+}
+
 function mainRequestFingerprint(body) {
     return Array.isArray(body?.messages)
         ? JSON.stringify([body.type ?? '', body.model ?? '', body.messages]) : '';
 }
 
-function rememberMainRequest(body, decision) {
+function rememberMainRequest(body, decision, retainReference = false) {
     if (!decision.mainPath && decision.provenance !== 'confirmed-main-request') return;
     const fingerprint = mainRequestFingerprint(body);
     if (!fingerprint) return;
     confirmedMainRequests.add(fingerprint);
     if (confirmedMainRequests.size > 8) confirmedMainRequests.delete(confirmedMainRequests.values().next().value);
+    // SETTINGS_READY listeners share this outbound object. Keep its identity so
+    // later listeners' edits do not invalidate provenance at the fetch boundary.
+    if (retainReference) {
+        confirmedMainPayloads.add(body);
+        if (confirmedMainPayloads.size > 8) confirmedMainPayloads.delete(confirmedMainPayloads.values().next().value);
+    }
 }
 
 function activateMainRequest(decision) {
@@ -2058,7 +2078,9 @@ function mainRequestDecision(body, callerStack = '') {
     const callerKind = stGenerationCallerKind(callerStack);
     const mainPath = callerKind === 'main';
     if (callerKind === 'auxiliary') return { eligible: false, reason: 'auxiliary_request_path', rawType };
-    const confirmed = confirmedMainRequests.has(mainRequestFingerprint(body));
+    const fingerprint = mainRequestFingerprint(body);
+    const confirmed = Boolean(fingerprint) && (confirmedMainRequests.has(fingerprint)
+        || [...confirmedMainPayloads].some(payload => mainRequestFingerprint(payload) === fingerprint));
     // Other extensions can send the same chat turn while normal generation is
     // active. Timing plus text alone must not authorize their auxiliary calls.
     if (!mainPath && !confirmed) return { eligible: false, reason: 'main_request_path_not_confirmed', rawType };
@@ -2103,7 +2125,7 @@ export function installPresetPlacementFetchHook() {
             && String(options?.method ?? (requestInput ? url.method : '')).toUpperCase() === 'POST') {
             // Capture before awaiting Request.clone().text(); async middleware
             // may otherwise hide Network > Initiator's exact sender chain.
-            const callerStack = new Error().stack ?? '';
+            const callerStack = captureRequestStack();
             try {
                 const serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
                 if (typeof serialized === 'string') {
@@ -4266,10 +4288,10 @@ function registerEvents() {
     // Never inject there: wait for the request-specific SETTINGS_READY payload.
     listen('CHAT_COMPLETION_SETTINGS_READY', (payload) => {
         if (payload?.dryRun) return;
-        const decision = mainRequestDecision(payload, new Error().stack ?? '');
+        const decision = mainRequestDecision(payload, captureRequestStack());
         if (!decision.eligible || !activateMainRequest(decision)) return;
         installPresetPlacementFetchHook();
-        rememberMainRequest(payload, decision);
+        rememberMainRequest(payload, decision, true);
         preparePendingGroupsFromCurrentChat(decision.type);
         // Operate on the outbound copy, never on shared chat message objects.
         payload.messages = payload.messages.map((message) => ({ ...message,
@@ -4376,4 +4398,3 @@ if (events.APP_READY) {
 } else {
     void initialize().catch((error) => console.error(`${LOG_PREFIX} 초기화 실패`, error));
 }
-

@@ -32,6 +32,82 @@ test('failed main rewrite returns the retained reply through the installed fetch
 
 let serial = 0;
 
+test('streaming main sender without a finishGenerating frame still reviews and repairs its reply', async () => {
+    let calls = 0;
+    const env = await setup({ globalStructureBans: [] }, () => {
+        const text = ++calls === 1 ? 'His jaw tightened.' : 'He opened the door.';
+        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`);
+    });
+    async function sendOpenAIRequest() {
+        await Promise.resolve();
+        return await globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify({ ...env.body, stream: true }) });
+    }
+    async function sendStreamingRequest() { return await sendOpenAIRequest(); }
+    try {
+        const raw = await (await sendStreamingRequest()).text();
+        assert.match(raw, /He opened the door/);
+        assert.doesNotMatch(raw, /jaw/);
+        assert.equal(calls, 2);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+    } finally { env.cleanup(); }
+});
+
+test('deep fetch middleware does not truncate the main sender evidence', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    const originalLimit = Error.stackTraceLimit;
+    function middleware(depth, action) { return depth ? middleware(depth - 1, action) : action(); }
+    function sendOpenAIRequest() {
+        return middleware(24, () => globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(env.body) }));
+    }
+    function sendGenerationRequest() { return sendOpenAIRequest(); }
+    try {
+        assert.equal((await (await sendGenerationRequest()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.length, 2);
+        assert.equal(Error.stackTraceLimit, originalLimit, 'stack setting must be restored immediately');
+    } finally { env.cleanup(); }
+});
+
+for (const type of ['normal', 'swipe', 'regenerate', 'continue']) {
+    test(`${type}: certified request survives later settings edits and an opaque async fetch wrapper`, async () => {
+        const env = await setup({ globalStructureBans: [] });
+        try {
+            env.listeners.get('start')(type);
+            const payload = { ...env.body, type, messages: structuredClone(env.body.messages) };
+            fromMainSender(() => env.listeners.get('settings')(payload));
+            // Another SETTINGS_READY listener may mutate the same outbound object
+            // after ttotto's listener. Its final contents are what fetch serializes.
+            payload.messages.push({ role: 'system', content: 'Additional scene instruction.' });
+            payload.model = 'main-model-selected-by-later-listener';
+            const response = await globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+            assert.equal((await response.json()).choices[0].message.content, 'He opened the door.');
+            assert.equal(env.sent.length, 2);
+            assert.equal(env.sent[1].body.model, payload.model);
+            assert.ok(env.sent[1].body.messages.some(m => m.content === 'Additional scene instruction.'));
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+        } finally { env.cleanup(); }
+    });
+}
+
+test('later-mutated certified payload never authorizes a known auxiliary caller or a later generation', async () => {
+    const env = await setup({ globalStructureBans: [] }, () => nativeReply('His jaw tightened.'));
+    try {
+        const payload = structuredClone(env.body);
+        fromMainSender(() => env.listeners.get('settings')(payload));
+        payload.messages.push({ role: 'system', content: 'Later setting.' });
+        function sendOpenAIRequest() { return globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(payload) }); }
+        function generateRawData() { return sendOpenAIRequest(); }
+        function sendStreamingRequest() { return generateRawData(); }
+        await sendStreamingRequest();
+        assert.equal(env.sent.length, 1, 'nested raw helper must not be rewritten');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport, undefined);
+        env.listeners.get('end')();
+        env.listeners.get('start')('normal');
+        await globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+        assert.equal(env.sent.length, 2, 'prior generation certification must not survive');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport, undefined);
+    } finally { env.cleanup(); }
+});
+
 for (const [label, status, raw, stream] of [
     ['ST 500 with upstream Vertex 503', 500, '{"error":{"code":503,"message":"Service unavailable","status":"UNAVAILABLE"}}', false],
     ['HTTP 401', 401, '{"error":{"code":401,"message":"API key not valid"}}', false],
