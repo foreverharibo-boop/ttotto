@@ -38,6 +38,10 @@ test('한국어 금지어는 뒤에 붙은 표현까지 감지하고 영어 단�
     assert.equal(module.containsExactBanTerm('회사내에서 만났다.', '사내'), false);
     assert.equal(module.containsExactBanTerm('사내용품', '내용'), false);
     assert.equal(module.containsExactBanTerm('사내ABC', '사내'), false);
+    for (const text of ['사내방송', '사내방송은', '사내방송국에서', '사내교육', '사내이사', '사내가구', '사내아이', '사내근로복지기금']) {
+        assert.equal(module.containsExactBanTerm(text, '사내'), false, text);
+    }
+    assert.equal(module.containsExactBanTerm('사내방송은 시작됐다.', '사내방송'), true);
     assert.equal(
         module.stripBanCounterText('<thinking>청년을 피해야 한다.</thinking><status>청년</status>그는 문을 닫았다.'),
         '그는 문을 닫았다.',

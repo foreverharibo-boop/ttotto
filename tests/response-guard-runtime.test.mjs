@@ -32,6 +32,20 @@ test('failed main rewrite returns the retained reply through the installed fetch
 
 let serial = 0;
 
+test('사내 ban neither judges nor rewrites unrelated 사내방송 compound', async () => {
+    const draft = '사내방송은 곧 시작된다. 사내교육도 예정되어 있다.';
+    const env = await setup({ globalBans: ['사내'], globalStructureBans: [] }, body => {
+        assert.notEqual(body.model, 'jev-latest');
+        return nativeReply(draft);
+    });
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, draft);
+        assert.equal(env.sent.length, 1);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 0);
+    } finally { env.cleanup(); }
+});
+
 for (const [term, draft] of [
     ['사내', '사내놈이 문을 열었다.'],
     ['사내', '사내새끼들은 문을 열었다.'],

@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.14';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.14';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.15';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.15';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.14';
+const EXTENSION_VERSION = '1.13.15';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -706,12 +706,14 @@ export function containsExactBanTerm(text, rawTerm) {
     const endsWithWord = /[\p{L}\p{N}_]$/u.test(term);
     const endsWithHangul = /[가-힣]$/u.test(term);
     const prefix = startsWithWord ? '(^|[^\\p{L}\\p{N}_])' : '';
-    // A Korean literal ban also covers Hangul attached on the right: compounds,
-    // plural forms and stacked particles (사내새끼들은, 굳은살로는). Do not
-    // whitelist individual particles; that leaves ordinary combinations out.
-    // Keep the left boundary, and keep Latin terms strict (jaw != jawline).
+    // Recognize limited noun extensions, plurals and particle combinations.
+    // Arbitrary Hangul is NOT a suffix: 사내방송/사내교육 are separate words.
+    // Keep both word boundaries and Latin matching unchanged.
+    const nounExtension = '(?:놈|새끼|녀석|자식|년|님|분|투성이)?(?:들)?';
+    const particle = '(?:이라고|이라는|이라도|이라며|이라면|이라서|이어서|이란|이라든지|처럼|에게서|한테서|께서|에서|에게|한테|으로서|으로써|로서|로써|으로|부터|까지|보다|하고|이나|이며|이고|이다|이야|이네|이군|인듯|인양|인|이랑|은|는|이|가|을|를|의|에|께|로|와|과|도|만|조차|마저|랑|야|아|나|라|든지|든|밖에|뿐)?';
+    const extraParticles = '(?:은|는|도|만|조차|마저|부터|까지|이나|나|로|으로|의|밖에|뿐){0,3}';
     const suffix = endsWithHangul
-        ? '[가-힣]*(?=$|[^\\p{L}\\p{N}_])'
+        ? `${nounExtension}${particle}${extraParticles}(?=$|[^\\p{L}\\p{N}_])`
         : endsWithWord ? '(?=$|[^\\p{L}\\p{N}_])' : '';
     return new RegExp(`${prefix}(?:${expression})${suffix}`, 'iu').test(normalizedText);
 }
