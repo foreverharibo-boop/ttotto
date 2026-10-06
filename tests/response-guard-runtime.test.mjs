@@ -12,7 +12,7 @@ const nativeReply = text => new Response(JSON.stringify({ choices: [{ index: 0, 
 const answer = (questions, choice = 'pass', confidence = 0.925, probabilities = { pass: 0.95, violation: 0.04, uncertain: 0.01 }) => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id,
     { type: 'choice', choice, confidence, probabilities }])) }));
 
-test('failed main rewrite blocks the banned reply through the installed fetch hook without a duplicate popup', async () => {
+test('failed main rewrite returns the retained reply through the installed fetch hook without a popup', async () => {
     let generations = 0;
     const env = await setup({}, body => {
         assert.notEqual(body.model, 'jev-latest');
@@ -22,9 +22,9 @@ test('failed main rewrite blocks the banned reply through the installed fetch ho
     for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
     try {
-        await assert.rejects(env.send(), /위반.*통과시키지/);
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened.');
         assert.equal(generations, 2);
-        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '답변 표시 중단');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '재작성 실패 · 마지막 답변 표시');
         assert.deepEqual(notices, []);
         assert.deepEqual({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated }, snapshot);
     } finally { env.cleanup(); }
@@ -276,7 +276,7 @@ test('main fetch with only literal bans completes the correction with zero Jev r
     } finally { env.cleanup(); }
 });
 
-test('main fetch blocks exhausted violating revisions and preserves preset state', async () => {
+test('main fetch publishes the latest violating revision with status only, no popup, and intact preset state', async () => {
     let generations = 0;
     const env = await setup({}, body => {
         assert.notEqual(body.model, 'jev-latest'); // exact violations need no semantic call
@@ -286,14 +286,14 @@ test('main fetch blocks exhausted violating revisions and preserves preset state
     for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
     try {
-        await assert.rejects(env.send(), /수정 요청 1회/);
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened 2.');
         assert.equal(generations, 2);
         assert.equal(notices.length, 0);
         const report = env.context.chatMetadata.ttotto.responseGuardReport;
-        assert.equal(report.stage, '답변 표시 중단');
+        assert.equal(report.stage, '위반 남음 · 마지막 답변 표시');
         assert.equal(report.attempt, 1);
         assert.ok(report.labels.length);
-        assert.match(report.error, /위반/);
+        assert.ok(!report.error);
         assert.deepEqual(env.context.chat, snapshot.chat);
         assert.deepEqual(env.context.oaiSettings, snapshot.profile);
         assert.deepEqual(env.context.extensionSettings.unrelated, snapshot.unrelated);

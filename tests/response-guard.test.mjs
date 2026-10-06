@@ -120,36 +120,34 @@ test('rewrites do not accumulate old rejected drafts or repair instructions', as
 });
 
 for (const limit of [0, 1, 2, 3]) {
-    test(`rewrite limit ${limit} honors audit-only zero and otherwise blocks remaining violations`, async () => {
+    test(`rewrite limit ${limit} returns the latest violating reply with a warning and no extra generation`, async () => {
         let sends = 0;
         const statuses = [];
-        const task = runResponseGuard({ ...base, plan: { ...plan, maxRewrites: limit },
+        const response = await runResponseGuard({ ...base, plan: { ...plan, maxRewrites: limit },
             send: async () => jsonReply(`jaw draft ${++sends}`), onStatus: status => statuses.push(status) });
-        if (limit === 0) {
-            assert.equal((await (await task).json()).choices[0].message.content, 'jaw draft 1');
-            assert.equal(statuses.at(-1).stage, '위반 남음 · 마지막 답변 표시');
-        } else {
-            await assert.rejects(task, /위반.*통과시키지/);
-            assert.equal(statuses.at(-1).stage, '위반 미해결 · 답변 표시 중단');
-        }
         assert.equal(sends, limit + 1);
+        assert.equal((await response.json()).choices[0].message.content, `jaw draft ${limit + 1}`);
+        assert.equal(statuses.at(-1).stage, '위반 남음 · 마지막 답변 표시');
         assert.equal(statuses.at(-1).attempt, limit);
+        assert.deepEqual(statuses.at(-1).labels, [rule.label]);
+        assert.equal(statuses.filter(x => x.warning).length, 1);
         assert.ok(!statuses.some(x => x.stage === '검수 통과'));
     });
 }
 
-test('semantic violation still remaining at the limit blocks the latest revision without locating it again', async () => {
+test('semantic violation still remaining at the limit returns the latest revision without locating it again', async () => {
     let sends = 0;
     let locations = 0;
-    await assert.rejects(runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 1 },
+    const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 1 },
         send: async () => jsonReply(`Violating structure ${++sends}.`),
         judge: async (state, questions) => {
             if (state.units) locations++;
             return verdict(questions, 'violation');
         },
-    }), /위반.*통과시키지/);
+    });
     assert.equal(sends, 2);
     assert.equal(locations, 1);
+    assert.equal((await response.json()).choices[0].message.content, 'Violating structure 2.');
 });
 
 test('stop on final warning prevents even an exhausted candidate being published', async () => {

@@ -124,7 +124,7 @@
         <div class="ttotto-guard-settings" role="group" aria-labelledby="ttotto-response-guard-title">
           <strong id="ttotto-response-guard-title">Jev 표시 전 검수</strong>
           <label class="ttotto-setting-row" for="ttotto-response-guard-enabled">
-            <span><strong>답변 표시 전 검수·수정</strong><small>금지어·금지 구조와 실제 주입된 반복 방지 항목을 검사해요. 초안 전체와 위반 위치를 같은 생성 모델에 보내 최소 수정을 요청하고, AI가 작성한 전체 수정본을 다시 확인해요. 수정 횟수가 1회 이상이면, 재작성 실패나 한도 소진 후에도 확정 위반이 남은 답변은 표시를 중단하고 이유를 남겨요. 0회는 검사만 하고 표시해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
+            <span><strong>답변 표시 전 검수·수정</strong><small>금지어·금지 구조와 실제 주입된 반복 방지 항목을 검사해요. 초안 전체와 위반 위치를 같은 생성 모델에 보내 최소 수정을 요청하고, AI가 작성한 전체 수정본을 다시 확인해요. 수정 한도에 도달하면 위반이 남아도 마지막 답변을 표시해요. 재작성 실패 시에는 마지막으로 정상 수신한 답변을 표시하고 감지 목록에 상태를 남겨요. 0회는 검사만 하고 표시해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
             <input id="ttotto-response-guard-enabled" type="checkbox">
           </label>
           <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-ban">

@@ -1,5 +1,5 @@
-import { checkAbort } from './jev-client.js?v=1.13.16';
-import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.16';
+import { checkAbort } from './jev-client.js?v=1.13.17';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.17';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -373,12 +373,11 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             if (attempt) assertWholeRewrite(candidate);
             // Retain only a complete, readable native reply. A failed revision
             // must not discard an earlier draft or expose partial/invalid bytes.
-            latestReply = { response, bytes, attempt, blocked: true };
+            latestReply = { response, bytes, attempt };
             // Inspect the complete model-written reply. No local sentence assembly.
             const prose = clean(candidate);
             const deferred = [];
             let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
-            latestReply.blocked = issues.length > 0;
             if (!issues.length) {
                 try {
                     const { state, questions, mapping } = buildGuardQuestions(plan, prose);
@@ -387,7 +386,6 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
                         const result = await reviewJudge(state, questions);
                         checkAbort(signal);
                         issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
-                        latestReply.blocked = issues.length > 0;
                     }
                 } catch (error) {
                     return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
@@ -405,9 +403,6 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
             checkAbort(signal);
             if (attempt >= plan.maxRewrites) {
-                if (plan.maxRewrites > 0) {
-                    throw new GuardError(`수정 요청 ${attempt}회 후에도 위반이 남아 답변 표시를 중단했어요: ${issues.map(x => x.label).join(', ')}`);
-                }
                 onStatus({ stage: '위반 남음 · 마지막 답변 표시', attempt, labels: issues.map(x => x.label),
                     warning: `수정 요청 한도(${plan.maxRewrites}회)에 도달했어요. 위반이 남은 마지막 답변을 표시해요.` });
                 checkAbort(signal);
@@ -438,12 +433,6 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
     } catch (error) {
         checkAbort(signal);
         if (error?.name === 'AbortError' || !latestReply) throw error;
-        if (latestReply.blocked) {
-            const message = `위반 답변을 통과시키지 않았어요. ${error?.message || '검수·재작성 실패'}`;
-            onStatus({ stage: '위반 미해결 · 답변 표시 중단', attempt: activeAttempt, error: message });
-            checkAbort(signal);
-            throw new GuardError(message);
-        }
         onStatus({ stage: activeAttempt > latestReply.attempt
             ? '재작성 실패 · 마지막 답변 표시' : '검수 건너뜀 · 마지막 답변 표시',
             attempt: activeAttempt, labels: [], targetCount: 0 });
