@@ -106,22 +106,10 @@ test('semantic violation location is supplied to the model before rechecking its
     assert.equal((await response.json()).choices[0].message.content, 'Safe start. Fresh reaction. Safe end.');
 });
 
-for (const bad of ['{"patches":[{"id":"S1","text":"fixed"}]}', '```json\n{"patches":[]}\n```']) {
-    test(`obsolete patch revision falls back to the ordinary original reply: ${bad.slice(0, 20)}`, async () => {
-        let calls = 0;
-        const response = await runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply(bad) });
-        assert.equal((await response.json()).choices[0].message.content, 'jaw.');
-        assert.equal(calls, 2);
-    });
-}
-
-test('empty complete revision shows the original draft', async () => {
-    let calls = 0;
-    const response = await runResponseGuard({ ...defaults, send: async () => ++calls === 1 ? reply('jaw.') : reply('  ') });
-    assert.equal((await response.json()).choices[0].message.content, 'jaw.');
-});
-
 for (const [label, fail] of [
+    ['old patch JSON', () => reply('{"patches":[{"id":"S1","text":"fixed"}]}')],
+    ['fenced old patches', () => reply('```json\n{"patches":[]}\n```')],
+    ['empty revision', () => reply('  ')],
     ['HTTP 500', () => new Response('provider error', { status: 500 })],
     ['network failure', () => { throw new TypeError('Failed to fetch'); }],
     ['unreadable JSON', () => new Response('{bad json')],
@@ -129,48 +117,43 @@ for (const [label, fail] of [
     ['tool response', () => new Response('{"choices":[{"message":{"tool_calls":[{}]}}]}')],
     ['body read failure', () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('read failed')); } }))],
 ]) {
-    test(`revision ${label} preserves the latest complete response with no extra request`, async () => {
+    test(`revision ${label} blocks instead of leaking a known violating draft`, async () => {
         let calls = 0;
         const statuses = [];
-        const raw = JSON.stringify({ choices: [{ message: { content: 'jaw.', reasoning_content: 'retained' } }], usage: { total_tokens: 17 } });
-        const response = await runResponseGuard({ ...defaults,
-            send: async () => ++calls === 1 ? new Response(raw, { status: 201, headers: { 'X-Draft': 'keep' } }) : fail(),
+        await assert.rejects(runResponseGuard({ ...defaults,
+            send: async () => ++calls === 1 ? reply('jaw.') : fail(),
             onStatus: status => statuses.push(status),
-        });
-        assert.equal(await response.text(), raw);
-        assert.equal(response.status, 201);
-        assert.equal(response.headers.get('X-Draft'), 'keep');
+        }), /위반.*통과시키지/);
         assert.equal(calls, 2);
-        assert.equal(statuses.at(-1).stage, '재작성 실패 · 마지막 답변 표시');
+        assert.equal(statuses.at(-1).stage, '위반 미해결 · 답변 표시 중단');
+        assert.equal(statuses.at(-1).attempt, 1);
     });
 }
 
-test('failure of a later revision returns the latest valid draft rather than the first draft', async () => {
+test('failure of a later revision never leaks the latest or first violating draft', async () => {
     let calls = 0;
-    const response = await runResponseGuard({ ...defaults, send: async () => {
+    await assert.rejects(runResponseGuard({ ...defaults, send: async () => {
         calls++;
         if (calls === 1) return reply('First jaw.');
         if (calls === 2) return reply('Latest jaw.');
         return new Response('failed', { status: 500 });
-    } });
-    assert.equal((await response.json()).choices[0].message.content, 'Latest jaw.');
+    } }), /위반.*통과시키지/);
     assert.equal(calls, 3);
 });
 
-test('an unexpected local review failure before revision still returns the complete original reply', async () => {
+test('unexpected local review failure blocks unchecked output', async () => {
     const statuses = [];
-    const response = await runResponseGuard({ ...defaults, send: async () => reply('Original reply.'),
-        clean: () => { throw new Error('local review failed'); }, onStatus: status => statuses.push(status) });
-    assert.equal((await response.json()).choices[0].message.content, 'Original reply.');
-    assert.equal(statuses.at(-1).stage, '검수 건너뜀 · 마지막 답변 표시');
+    await assert.rejects(runResponseGuard({ ...defaults, send: async () => reply('Original reply.'),
+        clean: () => { throw new Error('local review failed'); }, onStatus: status => statuses.push(status) }), /local review failed/);
+    assert.equal(statuses.at(-1).stage, '위반 미해결 · 답변 표시 중단');
 });
 
-test('incomplete revision stream returns the complete original stream byte for byte', async () => {
+test('incomplete revision stream never publishes the complete violating original', async () => {
     const original = 'data: {"choices":[{"delta":{"content":"jaw."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
     let calls = 0;
-    const response = await runResponseGuard({ ...defaults, body: { ...body, stream: true },
-        send: async () => new Response(++calls === 1 ? original : 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n') });
-    assert.equal(await response.text(), original);
+    await assert.rejects(runResponseGuard({ ...defaults, body: { ...body, stream: true },
+        send: async () => new Response(++calls === 1 ? original : 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n') }), /위반.*통과시키지/);
+    assert.equal(calls, 2);
 });
 
 test('user stop during a failed revision never publishes the retained draft', async () => {
@@ -241,18 +224,21 @@ test('honorific abbreviation does not split a normal sentence', () => {
     assert.equal(doc.units[1].text, 'His jaw tightened.');
 });
 
-test('whole-rule violation without any confidently located unit shows the latest reply without rewriting', async () => {
+test('confirmed violation without sentence IDs is sent to the model for minimal repair', async () => {
     let calls = 0;
-    const statuses = [];
     const response = await runResponseGuard({ ...defaults, plan: { ...plan, terms: [] },
-        send: async () => { calls++; return reply('Safe. Another sentence.'); },
-        judge: async (state, questions) => verdict(questions, () => state.units ? 'pass' : 'violation'),
-        onStatus: status => statuses.push(status),
+        send: async next => {
+            if (++calls === 2) {
+                const instructions = JSON.parse(next.messages.at(-1).content.split('\n').at(-1));
+                assert.deepEqual(instructions.targets, []);
+                assert.equal(instructions.unlocatedRestrictions.length, 1);
+            }
+            return reply(calls === 1 ? 'Bad structure.' : 'Fixed.');
+        },
+        judge: async (state, questions) => verdict(questions, () => state.units || calls > 1 ? 'pass' : 'violation'),
     });
-    assert.equal((await response.json()).choices[0].message.content, 'Safe. Another sentence.');
-    assert.equal(statuses.at(-1).stage, '위반 위치 미확인 · 마지막 답변 표시');
-    assert.ok(!statuses.some(x => x.stage === '검수 통과'));
-    assert.equal(calls, 1);
+    assert.equal((await response.json()).choices[0].message.content, 'Fixed.');
+    assert.equal(calls, 2);
 });
 
 test('uncertain localization leaves no targets and reports the unresolved rule', async () => {
@@ -287,7 +273,7 @@ test('stop on the unlocated-violation status prevents publishing the last reply'
     await assert.rejects(runResponseGuard({ ...defaults, plan: { ...plan, terms: [] }, signal: controller.signal,
         send: async () => reply('Safe.'),
         judge: async (state, qs) => verdict(qs, () => state.units ? 'uncertain' : 'violation'),
-        onStatus: status => { if (status.stage === '위반 위치 미확인 · 마지막 답변 표시') controller.abort(); },
+        onStatus: status => { if (status.stage === '위반 위치 보완 · 최소 수정 준비') controller.abort(); },
     }), { name: 'AbortError' });
 });
 
@@ -318,4 +304,40 @@ test('abort during localization stops before the next batch', async () => {
     await assert.rejects(locateRepairTargets(doc, [{ ...rule, term: '', questionId: 'ban_0' }], plan,
         clean, exactMatch, async (_state, questions) => { calls++; controller.abort(); return verdict(questions); }, controller.signal), { name: 'AbortError' });
     assert.equal(calls, 1);
+});
+
+test('literal phrase crossing more than five sentences still triggers a rewrite without Jev', async () => {
+    const term = 'One. Two. Three. Four. Five. Six.';
+    const phraseRule = { ...rule, term, instruction: `Do not use ${term}` };
+    const original = `Keep this. ${term} Keep that.`;
+    let sends = 0;
+    const response = await runResponseGuard({ ...defaults,
+        plan: { ...plan, rules: [phraseRule], terms: [phraseRule] },
+        judge: async () => assert.fail('local violations must not wait for Jev'),
+        send: async next => {
+            if (++sends === 1) return reply(original);
+            const data = JSON.parse(next.messages.at(-1).content.split('\n').at(-1));
+            assert.equal(next.messages.at(-2).content, original);
+            assert.equal(data.unlocatedRestrictions[0].term, term);
+            assert.match(next.messages.at(-1).content, /minimally fix/);
+            return reply('Keep this. A different phrase. Keep that.');
+        },
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'Keep this. A different phrase. Keep that.');
+});
+
+test('a localization exception after a confirmed literal hit cannot skip rewriting', async () => {
+    let sends = 0;
+    let cleaning = 0;
+    const response = await runResponseGuard({ ...defaults,
+        clean: text => { if (++cleaning === 2) throw new Error('location cleaner failed'); return clean(text); },
+        send: async next => {
+            if (++sends === 1) return reply('jaw. Safe.');
+            assert.match(next.messages.at(-1).content, /unlocatedRestrictions/);
+            return reply('Fixed. Safe.');
+        },
+    });
+    assert.equal(sends, 2);
+    assert.equal((await response.json()).choices[0].message.content, 'Fixed. Safe.');
 });

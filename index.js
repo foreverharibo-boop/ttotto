@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.15';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.15';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.16';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.16';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.15';
+const EXTENSION_VERSION = '1.13.16';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -123,6 +123,8 @@ let generationChatSnapshot = [];
 const preparedPresetContents = new Map();
 const confirmedMainRequests = new Set();
 const confirmedMainPayloads = new Set();
+const MAIN_REQUEST_MARKER = '__ttotto_main_request';
+let mainRequestToken = '';
 const registeredEventHandlers = [];
 const pendingBanRenderKeys = new Set();
 const activeResponseGuards = new Set();
@@ -1721,6 +1723,7 @@ function clearInjectedPrompt() {
     preparedPresetContents.clear();
     confirmedMainRequests.clear();
     confirmedMainPayloads.clear();
+    mainRequestToken = '';
     const promptsToClear = [
         [PROMPT_KEY, 0],
         [LEGACY_METAGAMING_PROMPT_KEY, IMPORTANT_PROMPT_DEPTH],
@@ -2046,6 +2049,8 @@ function rememberMainRequest(body, decision, retainReference = false) {
     // SETTINGS_READY listeners share this outbound object. Keep its identity so
     // later listeners' edits do not invalidate provenance at the fetch boundary.
     if (retainReference) {
+        mainRequestToken ||= globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+        body[MAIN_REQUEST_MARKER] = mainRequestToken;
         confirmedMainPayloads.add(body);
         if (confirmedMainPayloads.size > 8) confirmedMainPayloads.delete(confirmedMainPayloads.values().next().value);
     }
@@ -2081,7 +2086,8 @@ function mainRequestDecision(body, callerStack = '') {
     const mainPath = callerKind === 'main';
     if (callerKind === 'auxiliary') return { eligible: false, reason: 'auxiliary_request_path', rawType };
     const fingerprint = mainRequestFingerprint(body);
-    const confirmed = Boolean(fingerprint) && (confirmedMainRequests.has(fingerprint)
+    const confirmed = Boolean(mainRequestToken && body?.[MAIN_REQUEST_MARKER] === mainRequestToken)
+        || Boolean(fingerprint) && (confirmedMainRequests.has(fingerprint)
         || [...confirmedMainPayloads].some(payload => mainRequestFingerprint(payload) === fingerprint));
     // Other extensions can send the same chat turn while normal generation is
     // active. Timing plus text alone must not authorize their auxiliary calls.
@@ -2091,20 +2097,10 @@ function mainRequestDecision(body, callerStack = '') {
     if (!runtimeActive || !(mainGenerationActive || mainPath || confirmed)
         || skipCurrentGeneration) return { eligible: false, reason: 'no_active_main_generation', rawType };
     if (!Array.isArray(body?.messages)) return { eligible: false, reason: 'no_messages', rawType };
-    const context = getContext();
-    const evidence = [...generationChatSnapshot, ...captureConversationEvidence(context.chat)];
-    const matches = evidence.some((item) => body.messages.some((message) => {
-        if (message?.role !== item.role) return false;
-        const text = normalizePromptWhitespace(requestMessageText(message));
-        if (!text) return false;
-        if (text === item.text) return true;
-        const name = item.role === 'user' ? context.name1 : context.name2;
-        return Boolean(name) && text === `${name}: ${item.text}`;
-    }));
-    // Do not equate missing type / type=normal with main chat. World-building,
-    // translation and custom-request helpers may use those exact same values.
-    if (!matches) return { eligible: false, reason: 'main_chat_turn_not_matched', rawType };
-    return { eligible: true, reason: 'main_generation_and_chat_turn', rawType, mainPath,
+    // Proven ST main calls need no second text equality test. Translation,
+    // macros, context truncation and continuation may change every chat turn.
+    // Auxiliary calls were excluded above; timing/text alone never certifies one.
+    return { eligible: true, reason: 'main_generation_confirmed', rawType, mainPath,
         provenance: mainPath ? 'st-main-generation' : 'confirmed-main-request',
         // quiet is the request/display mode, not an instruction to skip all
         // full-chat prompts. Preserve body.type and normalize only our own rules.
@@ -2129,10 +2125,18 @@ export function installPresetPlacementFetchHook() {
             // may otherwise hide Network > Initiator's exact sender chain.
             const callerStack = captureRequestStack();
             try {
-                const serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
+                let serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
+                if (serialized instanceof ArrayBuffer || ArrayBuffer.isView(serialized)
+                    || (typeof Blob !== 'undefined' && serialized instanceof Blob)) {
+                    serialized = await new Response(serialized).text();
+                }
                 if (typeof serialized === 'string') {
                     const body = JSON.parse(serialized);
                     const decision = mainRequestDecision(body, callerStack);
+                    if (Object.hasOwn(body, MAIN_REQUEST_MARKER)) {
+                        delete body[MAIN_REQUEST_MARKER];
+                        options = { ...options, body: JSON.stringify(body) };
+                    }
                     if (decision.eligible && activateMainRequest(decision)) {
                         const type = decision.type;
                         guardedBody = body;
@@ -2168,13 +2172,24 @@ export function installPresetPlacementFetchHook() {
                 }
             } catch (error) {
                 console.warn(`${LOG_PREFIX} 프리셋 위치 주입 처리 실패`, error);
+                if (!guardedBody && stGenerationCallerKind(callerStack) === 'main'
+                    && getSettings().responseGuardEnabled && getChatState(false)?.enabled && !skipCurrentGeneration) {
+                    setPendingGuardReport('답변 표시 중단 · 본문 요청을 읽지 못함');
+                    throw new GuardError('본문 요청을 읽지 못해 검수를 시작하지 못했어요. 요청을 그대로 통과시키지 않았어요.');
+                }
             }
         }
         // Keep review separate from the permissive injection catch. Only the
         // guard can replay a complete reply after a review failure or deferral.
         if (guardedBody) {
-            const plan = createResponseGuardPlan(guardedBody, guardedType);
+            let plan;
+            try { plan = createResponseGuardPlan(guardedBody, guardedType); }
+            catch (error) {
+                setPendingGuardReport('답변 표시 중단 · 검수 준비 실패');
+                throw error;
+            }
             if (plan) return guardMainResponse(url, options, rest, guardedBody, plan, originalFetch);
+            setPendingGuardReport('검수 대상 없음 · 검수 미실행');
         }
         return originalFetch(url, options, ...rest);
     };
@@ -2249,8 +2264,18 @@ function renderResponseGuardReport(report = getChatState(false)?.responseGuardRe
     if (!element) return;
     element.hidden = !report;
     if (report) element.textContent = report.error
-        ? `${report.stage} · ${report.error}`
+        ? `${report.stage} · 수정 요청 ${report.attempt || 0}회 · ${report.error}`
         : `${report.stage} · 수정 요청 ${report.attempt || 0}회${report.targetCount ? ` · 수정 대상 ${report.targetCount}곳` : ''}${report.labels?.length ? ` · ${report.labels.join(', ')}` : ''}`;
+}
+
+function setPendingGuardReport(stage, onlyPending = false) {
+    const settings = getSettings();
+    const owner = getChatState(false);
+    if (!runtimeActive || !settings.enabled || !settings.responseGuardEnabled || !owner?.enabled) return;
+    if (onlyPending && owner.responseGuardReport?.stage !== '검수 대기 · 본문 요청 확인 중') return;
+    owner.responseGuardReport = { at: Date.now(), stage, attempt: 0 };
+    saveChatState();
+    renderResponseGuardReport(owner.responseGuardReport);
 }
 
 async function guardMainResponse(url, options, rest, body, plan, originalFetch) {
@@ -2260,18 +2285,17 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
     requestSignal?.addEventListener('abort', abort, { once: true });
     if (requestSignal?.aborted) controller.abort();
     activeResponseGuards.add(controller);
-    const owner = getChatState(false);
     const report = { at: Date.now(), stage: '검수 준비', attempt: 0 };
     const update = (patch) => {
         Object.assign(report, patch);
         if (plan.chatIdentity !== getChatIdentity()) return;
+        const owner = getChatState(false);
         if (owner) { owner.responseGuardReport = { ...report }; saveChatState(); }
         renderResponseGuardReport(report);
         console.info(`${LOG_PREFIX} 표시 전 검수`, { stage: report.stage, attempt: report.attempt });
     };
     try {
         const key = readJevKey();
-        if (!key) throw new GuardError('또또 설정에서 Jev API 키를 먼저 연결해 주세요.');
         const checkContext = () => {
             if (!runtimeActive || plan.chatIdentity !== getChatIdentity()
                 || !getSettings().responseGuardEnabled || !getChatState(false)?.enabled) controller.abort();
@@ -2287,6 +2311,7 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
             },
             judge: async (state, questions, signal) => {
                 checkContext();
+                if (!key) throw new GuardError('Jev 키가 없어 의미 검수를 건너뛰었어요. 금지어 직접 검사는 수행했어요.');
                 return requestJev(state, questions, { key, signal,
                     fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
             },
@@ -4282,6 +4307,7 @@ function registerEvents() {
         clearInjectedPrompt();
         mainGenerationActive = true;
         generationChatSnapshot = captureConversationEvidence(getContext().chat);
+        setPendingGuardReport('검수 대기 · 본문 요청 확인 중');
         installPresetPlacementFetchHook();
         installPresetPromptCapture(presetPromptApi?.promptManager ?? getContext()?.promptManager);
         preparePendingGroupsFromCurrentChat(observedGenerationType);
@@ -4302,7 +4328,10 @@ function registerEvents() {
         applyPendingGroupsToFinalMessages(payload?.messages, 'chat-completion-settings-ready');
         rememberMainRequest(payload, decision);
     });
-    listen('GENERATION_ENDED', clearInjectedPrompt);
+    listen('GENERATION_ENDED', () => {
+        setPendingGuardReport('검수 미실행 · 본문 요청 경로 미확인', true);
+        clearInjectedPrompt();
+    });
     listen('GENERATION_STOPPED', clearInjectedPrompt);
     listen('CHAT_CHANGED', () => {
         smartAbortController?.abort();

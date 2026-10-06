@@ -1,11 +1,12 @@
-import { checkAbort } from './jev-client.js?v=1.13.11';
-import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.11';
+import { checkAbort } from './jev-client.js?v=1.13.16';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.16';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
 }
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_BODY_IDLE_MS = 120000;
 const MAX_STATE_CHARS = 60000;
 const MAX_QUESTIONS = 128;
 const MAX_LOCATION_QUESTIONS = 96;
@@ -56,7 +57,8 @@ export function extractCandidate(raw, streaming, source) {
         try { data = JSON.parse(raw); } catch { throw new GuardError('생성 응답 형식을 읽지 못했어요.'); }
         assertTextOnly(data);
         return data?.content?.filter?.(x => x?.type === 'text')?.map(x => x.text)?.join('\n\n') || textParts(data?.choices?.[0]?.message?.content)
-            || data?.choices?.[0]?.text || data?.text || data?.message?.content?.[0]?.text
+            || data?.choices?.[0]?.text || data?.text || textParts(data?.message?.content)
+            || data?.candidates?.[0]?.content?.parts?.filter(x => !x.thought)?.map(x => x.text || '').join('')
             || data?.message?.tool_plan || '';
     }
     let text = '';
@@ -78,18 +80,29 @@ export function extractCandidate(raw, streaming, source) {
     return text;
 }
 
-async function bufferResponse(response, signal) {
+async function bufferResponse(response, signal, streaming = false) {
     checkAbort(signal);
     if (!response.body) throw new GuardError('생성 응답 본문이 비어 있어요.');
     const reader = response.body.getReader();
     const chunks = [];
     let size = 0;
+    const decoder = new TextDecoder();
+    let pendingEvent = '';
     const cancel = () => { void reader.cancel().catch(() => {}); };
     signal?.addEventListener('abort', cancel, { once: true });
     try {
         while (true) {
             checkAbort(signal);
-            const { done, value } = await reader.read();
+            let timer;
+            const { done, value } = await Promise.race([
+                reader.read(),
+                new Promise((_resolve, reject) => {
+                    timer = setTimeout(() => {
+                        reject(new GuardError('생성 응답이 120초 동안 도착하지 않아 검수를 중단했어요.'));
+                        cancel();
+                    }, MAX_BODY_IDLE_MS);
+                }),
+            ]).finally(() => clearTimeout(timer));
             checkAbort(signal);
             if (done) break;
             size += value.byteLength;
@@ -98,6 +111,17 @@ async function bufferResponse(response, signal) {
                 throw new GuardError('응답이 너무 커서 전체 검수를 완료하지 못했어요.');
             }
             chunks.push(value);
+            if (streaming) {
+                pendingEvent += decoder.decode(value, { stream: true });
+                const events = pendingEvent.split(/\r?\n\r?\n/);
+                pendingEvent = events.pop();
+                // A finish_reason may precede usage/signature frames. Only the
+                // transport's explicit terminal marker ends an open connection.
+                if (events.some(event => /^data:\s*\[DONE\]\s*$/m.test(event))) {
+                    void reader.cancel().catch(() => {});
+                    break;
+                }
+            }
         }
     } finally { signal?.removeEventListener('abort', cancel); reader.releaseLock(); }
     const bytes = new Uint8Array(size);
@@ -332,7 +356,7 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
                 }
                 throw new GuardError('재작성 API 요청이 실패했어요.');
             }
-            const bytes = await bufferResponse(response, signal);
+            const bytes = await bufferResponse(response, signal, Boolean(base.stream));
             const raw = new TextDecoder().decode(bytes);
             let candidate;
             try {
@@ -349,11 +373,12 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             if (attempt) assertWholeRewrite(candidate);
             // Retain only a complete, readable native reply. A failed revision
             // must not discard an earlier draft or expose partial/invalid bytes.
-            latestReply = { response, bytes, attempt };
+            latestReply = { response, bytes, attempt, blocked: true };
             // Inspect the complete model-written reply. No local sentence assembly.
             const prose = clean(candidate);
             const deferred = [];
             let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
+            latestReply.blocked = issues.length > 0;
             if (!issues.length) {
                 try {
                     const { state, questions, mapping } = buildGuardQuestions(plan, prose);
@@ -362,6 +387,7 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
                         const result = await reviewJudge(state, questions);
                         checkAbort(signal);
                         issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
+                        latestReply.blocked = issues.length > 0;
                     }
                 } catch (error) {
                     return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
@@ -379,6 +405,9 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             onStatus({ stage: '위반 발견', attempt, labels: issues.map(x => x.label) });
             checkAbort(signal);
             if (attempt >= plan.maxRewrites) {
+                if (plan.maxRewrites > 0) {
+                    throw new GuardError(`수정 요청 ${attempt}회 후에도 위반이 남아 답변 표시를 중단했어요: ${issues.map(x => x.label).join(', ')}`);
+                }
                 onStatus({ stage: '위반 남음 · 마지막 답변 표시', attempt, labels: issues.map(x => x.label),
                     warning: `수정 요청 한도(${plan.maxRewrites}회)에 도달했어요. 위반이 남은 마지막 답변을 표시해요.` });
                 checkAbort(signal);
@@ -387,27 +416,34 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             onStatus({ stage: '위반 위치 확인 중', attempt });
             // Rebuild evidence from the latest complete draft every round; IDs
             // from an earlier, differently worded draft are never reused.
-            const document = createRepairDocument(candidate, clean);
-            let targets;
+            let document = { original: candidate, units: [] };
+            let targets = new Map();
+            let locationError = '';
             try {
+                document = createRepairDocument(candidate, clean);
                 targets = await locateRepairTargets(document, issues, plan, clean, exactMatch, reviewJudge, signal, deferred);
             } catch (error) {
-                return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
+                checkAbort(signal);
+                if (error?.name === 'AbortError') throw error;
+                locationError = String(error?.message || '위치 확인 실패');
             }
             checkAbort(signal);
-            if (!targets.size) {
-                onStatus({ stage: '위반 위치 미확인 · 마지막 답변 표시', attempt,
-                    labels: issues.map(x => x.label), targetCount: 0 });
-                checkAbort(signal);
-                return replayModelResponse(response, bytes);
-            }
-            onStatus({ stage: '최소 수정 준비', attempt, targetCount: targets.size });
-            next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type);
+            const located = new Set([...targets.values()].flat());
+            const unlocated = issues.filter(issue => !located.has(issue));
+            onStatus({ stage: unlocated.length ? '위반 위치 보완 · 최소 수정 준비' : '최소 수정 준비',
+                attempt, targetCount: targets.size, locationError });
+            next = buildWholeRewriteBody(base, document, targets, plan.generationType ?? base.type, unlocated);
         }
         throw new GuardError('검수가 완료되지 않았어요.');
     } catch (error) {
         checkAbort(signal);
         if (error?.name === 'AbortError' || !latestReply) throw error;
+        if (latestReply.blocked) {
+            const message = `위반 답변을 통과시키지 않았어요. ${error?.message || '검수·재작성 실패'}`;
+            onStatus({ stage: '위반 미해결 · 답변 표시 중단', attempt: activeAttempt, error: message });
+            checkAbort(signal);
+            throw new GuardError(message);
+        }
         onStatus({ stage: activeAttempt > latestReply.attempt
             ? '재작성 실패 · 마지막 답변 표시' : '검수 건너뜀 · 마지막 답변 표시',
             attempt: activeAttempt, labels: [], targetCount: 0 });

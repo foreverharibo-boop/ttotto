@@ -52,7 +52,7 @@ test('whole-review and location calls share a single waiting budget', async () =
     let sends = 0;
     const response = await runResponseGuard({ ...base,
         plan: { ...plan, rules: [semanticRule], terms: [], reviewBudgetMs: 100 },
-        send: async () => { sends++; return jsonReply('He left.'); },
+        send: async next => { sends++; if (sends === 2) assert.match(next.messages.at(-1).content, /unlocatedRestrictions/); return jsonReply(sends === 1 ? 'Bad structure.' : 'He left.'); },
         judge: async (_state, qs, signal) => {
             if (++calls === 1) { await new Promise(resolve => setTimeout(resolve, 40)); return verdict(qs, 'violation'); }
             assert.ok(!signal.aborted);
@@ -61,7 +61,7 @@ test('whole-review and location calls share a single waiting budget', async () =
         },
     });
     assert.equal(calls, 2);
-    assert.equal(sends, 1);
+    assert.equal(sends, 2);
     assert.equal((await response.json()).choices[0].message.content, 'He left.');
 });
 
@@ -120,34 +120,36 @@ test('rewrites do not accumulate old rejected drafts or repair instructions', as
 });
 
 for (const limit of [0, 1, 2, 3]) {
-    test(`rewrite limit ${limit} returns the latest violating reply with a warning and no extra generation`, async () => {
+    test(`rewrite limit ${limit} honors audit-only zero and otherwise blocks remaining violations`, async () => {
         let sends = 0;
         const statuses = [];
-        const response = await runResponseGuard({ ...base, plan: { ...plan, maxRewrites: limit },
+        const task = runResponseGuard({ ...base, plan: { ...plan, maxRewrites: limit },
             send: async () => jsonReply(`jaw draft ${++sends}`), onStatus: status => statuses.push(status) });
+        if (limit === 0) {
+            assert.equal((await (await task).json()).choices[0].message.content, 'jaw draft 1');
+            assert.equal(statuses.at(-1).stage, '위반 남음 · 마지막 답변 표시');
+        } else {
+            await assert.rejects(task, /위반.*통과시키지/);
+            assert.equal(statuses.at(-1).stage, '위반 미해결 · 답변 표시 중단');
+        }
         assert.equal(sends, limit + 1);
-        assert.equal((await response.json()).choices[0].message.content, `jaw draft ${limit + 1}`);
-        assert.equal(statuses.at(-1).stage, '위반 남음 · 마지막 답변 표시');
         assert.equal(statuses.at(-1).attempt, limit);
-        assert.deepEqual(statuses.at(-1).labels, [rule.label]);
-        assert.equal(statuses.filter(x => x.warning).length, 1);
         assert.ok(!statuses.some(x => x.stage === '검수 통과'));
     });
 }
 
-test('semantic violation still remaining at the limit returns the latest revision without locating it again', async () => {
+test('semantic violation still remaining at the limit blocks the latest revision without locating it again', async () => {
     let sends = 0;
     let locations = 0;
-    const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 1 },
+    await assert.rejects(runResponseGuard({ ...base, plan: { ...plan, terms: [], maxRewrites: 1 },
         send: async () => jsonReply(`Violating structure ${++sends}.`),
         judge: async (state, questions) => {
             if (state.units) locations++;
             return verdict(questions, 'violation');
         },
-    });
+    }), /위반.*통과시키지/);
     assert.equal(sends, 2);
     assert.equal(locations, 1);
-    assert.equal((await response.json()).choices[0].message.content, 'Violating structure 2.');
 });
 
 test('stop on final warning prevents even an exhausted candidate being published', async () => {
@@ -290,13 +292,17 @@ test('Jev failure after an exact-term correction returns the latest corrected re
     assert.equal((await response.json()).choices[0].message.content, 'He left.');
 });
 
-test('Jev localization error displays the intact draft without blind rewriting', async () => {
+test('Jev localization error still requests a minimal correction for the confirmed violation', async () => {
     let sends = 0;
     const response = await runResponseGuard({ ...base, plan: { ...plan, terms: [] },
-        send: async () => { sends++; return jsonReply('He left.'); },
-        judge: async (state, qs) => { if (state.units) throw new Error('location failed'); return verdict(qs, 'violation'); },
+        send: async next => {
+            sends++;
+            if (sends === 2) assert.match(next.messages.at(-1).content, /unlocatedRestrictions/);
+            return jsonReply(sends === 1 ? 'Bad structure.' : 'He left.');
+        },
+        judge: async (state, qs) => { if (state.units) throw new Error('location failed'); return verdict(qs, sends === 1 ? 'violation' : 'pass'); },
     });
-    assert.equal(sends, 1);
+    assert.equal(sends, 2);
     assert.equal((await response.json()).choices[0].message.content, 'He left.');
 });
 
@@ -425,4 +431,39 @@ test('rewrite preserves other instructions and does not judge WEAVE', () => {
     assert.equal(rewritten.messages[2].content, original.messages[2].content);
     assert.match(rewritten.messages.at(-1).content, /newly generated continuation/);
     assert.equal(original.messages.length, 3);
+});
+
+test('SSE DONE split across chunks triggers a literal rewrite even when HTTP stays open', async () => {
+    let sends = 0;
+    let cancelled = 0;
+    const encoder = new TextEncoder();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1000);
+    try {
+        const response = await runResponseGuard({ ...base, plan: { ...plan, rules: [rule] },
+            body: { ...body, stream: true }, signal: controller.signal,
+            judge: async () => assert.fail('no Jev for literals'),
+            send: async () => {
+                const text = ++sends === 1 ? 'jaw.' : 'Fixed.';
+                return new Response(new ReadableStream({ start(c) {
+                    c.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }] })}\r\n\r\n`));
+                    c.enqueue(encoder.encode('data: [DO'));
+                    c.enqueue(encoder.encode('NE]\r\n\r'));
+                    c.enqueue(encoder.encode('\n'));
+                }, cancel() { cancelled++; } }));
+            },
+        });
+        assert.equal(extractCandidate(await response.text(), true, 'custom'), 'Fixed.');
+        assert.equal(sends, 2);
+        assert.equal(cancelled, 2);
+    } finally { clearTimeout(timeout); }
+});
+
+test('native non-streaming Gemini and multipart Cohere replies include all visible text', () => {
+    assert.equal(extractCandidate(JSON.stringify({ candidates: [{ content: { parts: [
+        { thought: true, text: 'hidden' }, { text: 'First. ' }, { text: 'jaw.' },
+    ] } }] }), false, 'vertexai'), 'First. jaw.');
+    assert.equal(extractCandidate(JSON.stringify({ message: { content: [
+        { type: 'text', text: 'First. ' }, { type: 'text', text: 'jaw.' },
+    ] } }), false, 'cohere'), 'First. jaw.');
 });

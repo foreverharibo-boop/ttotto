@@ -12,7 +12,7 @@ const nativeReply = text => new Response(JSON.stringify({ choices: [{ index: 0, 
 const answer = (questions, choice = 'pass', confidence = 0.925, probabilities = { pass: 0.95, violation: 0.04, uncertain: 0.01 }) => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map(id => [id,
     { type: 'choice', choice, confidence, probabilities }])) }));
 
-test('failed main rewrite returns the retained reply through the installed fetch hook without a popup', async () => {
+test('failed main rewrite blocks the banned reply through the installed fetch hook without a duplicate popup', async () => {
     let generations = 0;
     const env = await setup({}, body => {
         assert.notEqual(body.model, 'jev-latest');
@@ -22,9 +22,9 @@ test('failed main rewrite returns the retained reply through the installed fetch
     for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
     try {
-        assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened.');
+        await assert.rejects(env.send(), /위반.*통과시키지/);
         assert.equal(generations, 2);
-        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '재작성 실패 · 마지막 답변 표시');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '답변 표시 중단');
         assert.deepEqual(notices, []);
         assert.deepEqual({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated }, snapshot);
     } finally { env.cleanup(); }
@@ -138,12 +138,12 @@ test('later-mutated certified payload never authorizes a known auxiliary caller 
         function sendStreamingRequest() { return generateRawData(); }
         await sendStreamingRequest();
         assert.equal(env.sent.length, 1, 'nested raw helper must not be rewritten');
-        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport, undefined);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 대기 · 본문 요청 확인 중');
         env.listeners.get('end')();
         env.listeners.get('start')('normal');
         await globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(payload) });
         assert.equal(env.sent.length, 2, 'prior generation certification must not survive');
-        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport, undefined);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 대기 · 본문 요청 확인 중');
     } finally { env.cleanup(); }
 });
 
@@ -276,7 +276,7 @@ test('main fetch with only literal bans completes the correction with zero Jev r
     } finally { env.cleanup(); }
 });
 
-test('main fetch publishes the latest violating revision with status only, no popup, and intact preset state', async () => {
+test('main fetch blocks exhausted violating revisions and preserves preset state', async () => {
     let generations = 0;
     const env = await setup({}, body => {
         assert.notEqual(body.model, 'jev-latest'); // exact violations need no semantic call
@@ -286,14 +286,14 @@ test('main fetch publishes the latest violating revision with status only, no po
     for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     const snapshot = structuredClone({ chat: env.context.chat, profile: env.context.oaiSettings, unrelated: env.context.extensionSettings.unrelated });
     try {
-        assert.equal((await (await env.send()).json()).choices[0].message.content, 'His jaw tightened 2.');
+        await assert.rejects(env.send(), /수정 요청 1회/);
         assert.equal(generations, 2);
         assert.equal(notices.length, 0);
         const report = env.context.chatMetadata.ttotto.responseGuardReport;
-        assert.equal(report.stage, '위반 남음 · 마지막 답변 표시');
+        assert.equal(report.stage, '답변 표시 중단');
         assert.equal(report.attempt, 1);
         assert.ok(report.labels.length);
-        assert.ok(!report.error);
+        assert.match(report.error, /위반/);
         assert.deepEqual(env.context.chat, snapshot.chat);
         assert.deepEqual(env.context.oaiSettings, snapshot.profile);
         assert.deepEqual(env.context.extensionSettings.unrelated, snapshot.unrelated);
@@ -337,7 +337,7 @@ for (const [label, choice, confidence, probabilities] of [
     });
 }
 
-test('main fetch shows an unlocated semantic violation without a revision request or popup', async () => {
+test('main fetch rewrites an unlocated confirmed violation before showing the next reply', async () => {
     let checks = 0;
     const env = await setup({}, body => {
         if (body.model !== 'jev-latest') return nativeReply('He opened the door.');
@@ -350,10 +350,10 @@ test('main fetch shows an unlocated semantic violation without a revision reques
     for (const kind of ['warning', 'error', 'info', 'success']) globalThis.toastr[kind] = (...args) => notices.push([kind, ...args]);
     try {
         assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
-        assert.equal(checks, 2);
-        assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 1);
+        assert.equal(checks, 3);
+        assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 2);
         assert.equal(notices.length, 0);
-        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '위반 위치 미확인 · 마지막 답변 표시');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '판정 보류 · 답변 표시');
         assert.ok(!env.context.chatMetadata.ttotto.responseGuardReport.error);
     } finally { env.cleanup(); }
 });
@@ -483,11 +483,13 @@ test('same-endpoint Jev and translator utility requests are forwarded unmodified
     } finally { env.cleanup(); }
 });
 
-test('missing Jev key blocks before any paid main generation and does not change 100LOG key', async () => {
+test('missing Jev key still corrects literal bans without using another extension key', async () => {
     const env = await setup(); env.stored.delete(JEV_KEY_STORAGE);
     try {
-        await assert.rejects(env.send(), /API 키/);
-        assert.equal(env.sent.length, 0);
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.length, 2);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 건너뜀 · 마지막 답변 표시');
         assert.equal(env.stored.get('hundredlog.typesafeKey'), 'untouched-100log-key');
     } finally { env.cleanup(); }
 });
@@ -566,5 +568,92 @@ test('next-generation skip also skips the response guard', async () => {
         await env.send();
         assert.equal(env.sent.length, 1);
         assert.doesNotMatch(JSON.stringify(env.sent[0].body), /<ANTI_METAGAMING>/);
+    } finally { env.cleanup(); }
+});
+
+for (const type of ['normal', 'swipe', 'regenerate', 'continue']) {
+    test(`${type}: transformed or absent chat turns do not bypass a proven main request`, async () => {
+        const env = await setup({ globalStructureBans: [] });
+        try {
+            env.listeners.get('start')(type);
+            const payload = { ...env.body, type, messages: [{ role: 'system', content: 'A transformed prompt without the original user turn.' }] };
+            assert.equal((await (await env.send(payload)).json()).choices[0].message.content, 'He opened the door.');
+            assert.equal(env.sent.length, 2);
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+        } finally { env.cleanup(); }
+    });
+}
+
+test('certified payload survives cloning, message replacement, and a lost stack without leaking its marker', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    try {
+        const payload = structuredClone(env.body);
+        fromMainSender(() => env.listeners.get('settings')(payload));
+        const transformed = structuredClone(payload);
+        transformed.messages = [{ role: 'user', content: 'Entirely translated input.' }];
+        transformed.model = 'different-model';
+        const response = await globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(transformed) });
+        assert.equal((await response.json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.length, 2);
+        for (const request of env.sent) assert.equal(Object.hasOwn(request.body, '__ttotto_main_request'), false);
+    } finally { env.cleanup(); }
+});
+
+for (const [label, encode] of [
+    ['Blob', text => new Blob([text], { type: 'application/json' })],
+    ['ArrayBuffer', text => new TextEncoder().encode(text).buffer],
+    ['Uint8Array', text => new TextEncoder().encode(text)],
+]) {
+    test(`${label} main request bodies still trigger literal correction`, async () => {
+        const env = await setup({ globalStructureBans: [] });
+        try {
+            const response = await env.send(env.body, { body: encode(JSON.stringify(env.body)) });
+            assert.equal((await response.json()).choices[0].message.content, 'He opened the door.');
+            assert.equal(env.sent.length, 2);
+        } finally { env.cleanup(); }
+    });
+}
+
+test('literal-only correction works with no Jev key before or after the rewrite', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    env.stored.delete(JEV_KEY_STORAGE);
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.length, 2);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+    } finally { env.cleanup(); }
+});
+
+test('metadata replacement during generation cannot leave the report stuck at zero', async () => {
+    const env = await setup({ globalStructureBans: [] }, (_body, _options, sent, context) => {
+        context.chatMetadata.ttotto = structuredClone(context.chatMetadata.ttotto);
+        return nativeReply(sent.length === 1 ? 'jaw.' : 'Fixed.');
+    });
+    try {
+        await env.send();
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+    } finally { env.cleanup(); }
+});
+
+test('a generation missed by the hook reports not inspected instead of retaining an older pass', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    try {
+        await env.send();
+        env.listeners.get('end')();
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+        env.listeners.get('start')('normal');
+        env.listeners.get('end')();
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 미실행 · 본문 요청 경로 미확인');
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 0);
+    } finally { env.cleanup(); }
+});
+
+test('unreadable proven main request is blocked without forwarding an unguarded request', async () => {
+    const env = await setup({ globalStructureBans: [] });
+    try {
+        await assert.rejects(env.send(env.body, { body: '{broken json' }), /본문 요청을 읽지 못해/);
+        assert.equal(env.sent.length, 0);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '답변 표시 중단 · 본문 요청을 읽지 못함');
     } finally { env.cleanup(); }
 });
