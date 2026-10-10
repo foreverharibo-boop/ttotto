@@ -1,5 +1,5 @@
-import { checkAbort } from './jev-client.js?v=1.13.17';
-import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.17';
+import { checkAbort } from './jev-client.js?v=1.13.18';
+import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.18';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -440,3 +440,4 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
         return replayModelResponse(latestReply.response, latestReply.bytes);
     }
 }
+

@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.17';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.17';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.18';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.18';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.17';
+const EXTENSION_VERSION = '1.13.18';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2279,6 +2279,10 @@ function setPendingGuardReport(stage, onlyPending = false) {
 }
 
 async function guardMainResponse(url, options, rest, body, plan, originalFetch) {
+    // One native reply, including its actual rewrites. JEV/helper calls below
+    // deliberately stay outside this session and do not occupy relay slots.
+    const relay = globalThis.sillyRelayReplies?.apiVersion === 1
+        ? globalThis.sillyRelayReplies.begin() : null;
     const controller = new AbortController();
     const requestSignal = options?.signal ?? (typeof Request !== 'undefined' && url instanceof Request ? url.signal : null);
     const abort = () => controller.abort();
@@ -2306,8 +2310,9 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
             body, plan, signal: controller.signal,
             send: async (next, signal) => {
                 checkContext();
-                return originalFetch(url, { ...options, [RESPONSE_GUARD_REQUEST]: true,
-                    method: 'POST', body: JSON.stringify(next), signal }, ...rest);
+                const init = { ...options, [RESPONSE_GUARD_REQUEST]: true,
+                    method: 'POST', body: JSON.stringify(next), signal };
+                return relay ? relay.fetch(url, init, originalFetch) : originalFetch(url, init, ...rest);
             },
             judge: async (state, questions, signal) => {
                 checkContext();
@@ -2320,9 +2325,12 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
             onStatus: (patch) => { checkContext(); update(patch); },
         });
         checkContext();
+        relay?.complete(response);
         return response;
     } catch (error) {
         const cancelled = controller.signal.aborted || error?.name === 'AbortError';
+        if (cancelled) relay?.cancel();
+        else relay?.complete();
         update({ stage: cancelled ? '검수 중단' : '답변 표시 중단', error: cancelled ? '' : String(error.message || '검수 실패') });
         // Generation/guard failures belong in the status report. Do not
         // duplicate ST/provider errors in a toast under the extension name.
@@ -4429,3 +4437,4 @@ if (events.APP_READY) {
 } else {
     void initialize().catch((error) => console.error(`${LOG_PREFIX} 초기화 실패`, error));
 }
+

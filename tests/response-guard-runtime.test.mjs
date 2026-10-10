@@ -657,3 +657,69 @@ test('unreadable proven main request is blocked without forwarding an unguarded 
         assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '답변 표시 중단 · 본문 요청을 읽지 못함');
     } finally { env.cleanup(); }
 });
+
+
+test('relay session contains the draft and actual rewrites only, and selects the response returned to ST', async () => {
+    for (const failure of [false, true]) {
+        let calls = 0;
+        const env = await setup({}, (body) => {
+            if (body.model === 'jev-latest') return answer(JSON.parse(body.custom_include_body).questions);
+            calls++;
+            if (failure && calls === 2) return Response.json({ error: 'revision failed' }, { status: 500 });
+            return nativeReply(calls === 1 ? 'His jaw tightened.' : 'He opened the door.');
+        });
+        const previous = globalThis.sillyRelayReplies;
+        const scoped = [], selected = [];
+        let begins = 0;
+        globalThis.sillyRelayReplies = { apiVersion: 1, begin() {
+            begins++;
+            return {
+                async fetch(input, init, upstream) {
+                    const body = JSON.parse(init.body);
+                    assert.equal(body.model, 'original-main', 'JEV must not enter the reply session');
+                    scoped.push(body);
+                    const response = await upstream(input, init);
+                    response.headers.set('x-silly-relay-job', String(scoped.length).padStart(32, '0'));
+                    return response;
+                },
+                complete(response) { selected.push(response?.headers.get('x-silly-relay-job')); },
+                cancel() { assert.fail('successful/fallback answer is not a cancellation'); },
+            };
+        } };
+        try {
+            const response = await env.send();
+            assert.equal((await response.json()).choices[0].message.content, failure ? 'His jaw tightened.' : 'He opened the door.');
+            assert.equal(begins, 1);
+            assert.equal(scoped.length, 2);
+            assert.deepEqual(selected, [String(failure ? 1 : 2).padStart(32, '0')]);
+            assert.equal(env.sent.filter(x => x.body.model === 'original-main').length, 2);
+        } finally {
+            if (previous === undefined) delete globalThis.sillyRelayReplies; else globalThis.sillyRelayReplies = previous;
+            env.cleanup();
+        }
+    }
+});
+
+test('user stop cancels the logical relay reply instead of completing its earlier draft', async () => {
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const env = await setup({}, (body, options) => {
+        if (body.model !== 'jev-latest') return nativeReply('He opened the door.');
+        started();
+        return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('stopped', 'AbortError')), { once: true }));
+    });
+    let cancelled = 0, completed = 0;
+    const previous = globalThis.sillyRelayReplies;
+    globalThis.sillyRelayReplies = { apiVersion: 1, begin: () => ({
+        fetch: (input, init, upstream) => upstream(input, init),
+        complete: () => completed++, cancel: () => cancelled++,
+    }) };
+    try {
+        const rejected = assert.rejects(env.send(), { name: 'AbortError' });
+        await ready; env.listeners.get('stop')(); await rejected;
+        assert.equal(cancelled, 1); assert.equal(completed, 0);
+    } finally {
+        if (previous === undefined) delete globalThis.sillyRelayReplies; else globalThis.sillyRelayReplies = previous;
+        env.cleanup();
+    }
+});
