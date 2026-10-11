@@ -723,3 +723,37 @@ test('user stop cancels the logical relay reply instead of completing its earlie
         env.cleanup();
     }
 });
+
+
+test('notification scope holds all drafts, excludes JEV, and ends only after final selection', async () => {
+    const env = await setup();
+    const previous = globalThis.sillyPopNotifications;
+    const events = [];
+    globalThis.sillyPopNotifications = {apiVersion:1, beginReview(owner, options) {
+        assert.equal(owner, 'ttotto'); assert.equal(options.type, 'normal');
+        events.push('begin');
+        return {defer(init) {
+            assert.notEqual(JSON.parse(init.body).model, 'jev-latest');
+            const headers = new Headers(init.headers); headers.set('X-Test-Review', 'held');
+            events.push('draft'); return {...init,headers};
+        }, finish() {events.push('finish');}, cancel() {events.push('cancel');}};
+    }};
+    try {
+        const result = await env.send();
+        assert.equal((await result.json()).choices[0].message.content, 'He opened the door.');
+        assert.deepEqual(events, ['begin','draft','draft','finish']);
+        for (const call of env.sent) assert.equal(new Headers(call.options.headers).has('X-Test-Review'), call.body.model !== 'jev-latest');
+    } finally {globalThis.sillyPopNotifications=previous;env.cleanup();}
+});
+
+test('notification scope cancels on transport failure and is absent when review is disabled', async () => {
+    for (const disabled of [false,true]) {
+        const env=await setup({responseGuardEnabled:!disabled},()=>{throw new TypeError('network');});
+        const previous=globalThis.sillyPopNotifications; const events=[];
+        globalThis.sillyPopNotifications={apiVersion:1,beginReview:()=>{
+            events.push('begin');return {defer:init=>init,finish:()=>events.push('finish'),cancel:()=>events.push('cancel')};
+        }};
+        try {await assert.rejects(env.send(), /network/);assert.deepEqual(events,disabled?[]:['begin','cancel']);}
+        finally {globalThis.sillyPopNotifications=previous;env.cleanup();}
+    }
+});
