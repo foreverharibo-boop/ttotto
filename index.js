@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.19';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.19';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.20';
+import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.20';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.19';
+const EXTENSION_VERSION = '1.13.20';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -105,6 +105,7 @@ let sourceMutationTimer = null;
 let pendingSourceMutationPayload = null;
 let smartRunning = false;
 let smartAbortController = null;
+let smartRevision = 0;
 let smartForcePending = false;
 let forceSmartOnNextAnalysis = false;
 let runtimeActive = true;
@@ -2455,6 +2456,9 @@ async function runSmartAnalysis({ manual = false } = {}) {
     const messages = collectAssistantMessages();
     const assistantTotal = countAssistantMessages();
     const chatIdentity = getChatIdentity();
+    const metadata = getContext().chatMetadata;
+    const revision = smartRevision;
+    const messageFingerprint = fingerprintMessages(messages);
     if (messages.length < 3) {
         if (manual) toastr.info('정밀 분석에는 AI 답변이 최소 3개 필요해요.', '🌀또또');
         return false;
@@ -2462,16 +2466,18 @@ async function runSmartAnalysis({ manual = false } = {}) {
 
     smartRunning = true;
     smartAbortController?.abort();
-    smartAbortController = new AbortController();
+    const controller = new AbortController();
+    smartAbortController = controller;
+    const isCurrent = () => !controller.signal.aborted && runtimeActive
+        && getSettings().enabled && getSettings().smartAnalysis
+        && chatIdentity === getChatIdentity() && getContext().chatMetadata === metadata
+        && getChatState(false) === state && state.enabled && smartRevision === revision
+        && fingerprintMessages(collectAssistantMessages()) === messageFingerprint;
     updateUi();
 
     try {
-        const response = await requestSmartAnalysis(messages, smartAbortController.signal);
-        if (!runtimeActive || chatIdentity !== getChatIdentity()) {
-            const aborted = new Error('채팅이 변경되어 정밀 분석 결과를 폐기했습니다.');
-            aborted.name = 'AbortError';
-            throw aborted;
-        }
+        const response = await requestSmartAnalysis(messages, controller.signal);
+        if (!isCurrent()) return false;
         const patterns = parseSmartResponse(response, messages);
         state.smart = {
             fingerprint: fingerprintMessages(messages),
@@ -2489,7 +2495,7 @@ async function runSmartAnalysis({ manual = false } = {}) {
         if (manual) toastr.success(`정밀 분석 완료: ${patterns.length}개 패턴`, '🌀또또');
         return true;
     } catch (error) {
-        if (error?.name === 'AbortError') return false;
+        if (error?.name === 'AbortError' || !isCurrent()) return false;
         console.error(`${LOG_PREFIX} 정밀 분석 실패`, error);
         state.smart.error = String(error?.message ?? error);
         saveChatState();
@@ -2523,6 +2529,8 @@ function scheduleSmartAnalysis({ force = false } = {}) {
 }
 
 function markSmartResultsStale() {
+    smartRevision += 1;
+    smartAbortController?.abort();
     const state = getChatState(false);
     if (!state?.smart) return;
     state.smart.stale = true;
@@ -3584,6 +3592,8 @@ function bindUi() {
         if (!await confirmAction('🌀또또', '현재 채팅의 AI 정밀 분석 기록을 초기화할까요?')) return;
         const state = getChatState();
         if (!state) return;
+        smartRevision += 1;
+        smartAbortController?.abort();
         state.smart = createDefaultChatState().smart;
         saveChatState();
         invalidateAnalysis();

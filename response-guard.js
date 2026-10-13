@@ -310,6 +310,9 @@ function boundedReviewJudge(judge, parentSignal, budgetMs = MAX_REVIEW_WAIT_MS) 
             };
             parentSignal?.addEventListener('abort', cancel, { once: true });
             timer = setTimeout(() => {
+                // Timers can fire just before the fractional deadline. Once
+                // timed out, never start another call with a sub-ms remainder.
+                remaining = 0;
                 controller.abort();
                 reject(timeoutError());
             }, remaining);
