@@ -465,3 +465,21 @@ test('native non-streaming Gemini and multipart Cohere replies include all visib
         { type: 'text', text: 'First. ' }, { type: 'text', text: 'jaw.' },
     ] } }), false, 'cohere'), 'First. jaw.');
 });
+
+test('direct review entry passes unsupported formats once and still respects cancellation', async () => {
+    for (const flags of [{ n: 3 }, { request_images: true }]) {
+        const payload = { ...body, ...flags };
+        const response = new Response('native error', { status: 500 });
+        let calls = 0;
+        const controller = new AbortController();
+        const options = { ...base, body: payload, signal: controller.signal,
+            send: async (data, signal) => { calls++; assert.equal(data, payload); assert.equal(signal, controller.signal); return response; },
+            judge: () => assert.fail('unsupported formats must not be judged') };
+        assert.equal(await runResponseGuard(options), response);
+        assert.equal(response.bodyUsed, false);
+        assert.equal(calls, 1);
+        controller.abort();
+        await assert.rejects(runResponseGuard(options), { name: 'AbortError' });
+        assert.equal(calls, 1);
+    }
+});

@@ -16,8 +16,8 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.20';
-import { GuardError, runResponseGuard } from './response-guard.js?v=1.13.20';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.21';
+import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.21';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.20';
+const EXTENSION_VERSION = '1.13.21';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2280,6 +2280,17 @@ function setPendingGuardReport(stage, onlyPending = false) {
 }
 
 async function guardMainResponse(url, options, rest, body, plan, originalFetch) {
+    // Unsupported review formats still use the original generation path. Do
+    // not open review/notification sessions or consume Relay's native ticket.
+    const skipReason = responseGuardSkipReason(body);
+    if (skipReason) {
+        setPendingGuardReport(`검수 건너뜀 · ${skipReason}`);
+        console.info(`${LOG_PREFIX} 표시 전 검수 제외`, {
+            reason: skipReason, multipleReplies: Number(body.n || 1) > 1,
+            requestImages: Boolean(body.request_images),
+        });
+        return originalFetch(url, options, ...rest);
+    }
     // One native reply, including its actual rewrites. JEV/helper calls below
     // deliberately stay outside this session and do not occupy relay slots.
     const relay = globalThis.sillyRelayReplies?.apiVersion === 1

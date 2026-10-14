@@ -5,6 +5,12 @@ export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
 }
 
+export function responseGuardSkipReason(body) {
+    if (Number(body.n || 1) > 1) return '복수 답변 요청';
+    if (body.request_images) return '이미지 출력 옵션';
+    return '';
+}
+
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_IDLE_MS = 120000;
 const MAX_STATE_CHARS = 60000;
@@ -336,7 +342,12 @@ function boundedReviewJudge(judge, parentSignal, budgetMs = MAX_REVIEW_WAIT_MS) 
 
 export async function runResponseGuard({ body, plan, signal, send, judge, clean, exactMatch, onStatus = () => {} }) {
     checkAbort(signal);
-    if (Number(body.n || 1) > 1 || body.request_images) throw new GuardError('검수 모드는 단일 텍스트 답변만 지원해요.');
+    const skipReason = responseGuardSkipReason(body);
+    if (skipReason) {
+        onStatus({ stage: `검수 건너뜀 · ${skipReason}`, attempt: 0 });
+        checkAbort(signal);
+        return send(body, signal);
+    }
     const base = structuredClone(body);
     const reviewJudge = boundedReviewJudge(judge, signal, plan.reviewBudgetMs);
     let next = base;

@@ -757,3 +757,38 @@ test('notification scope cancels on transport failure and is absent when review 
         finally {globalThis.sillyPopNotifications=previous;env.cleanup();}
     }
 });
+
+for (const [flags, reason] of [
+    [{ n: 2 }, '복수 답변 요청'],
+    [{ n: 1, request_images: true }, '이미지 출력 옵션'],
+]) {
+    for (const stream of [false, true]) {
+        test(`unsupported review passes one native request unchanged: ${reason}, stream=${stream}`, async () => {
+            const raw = stream ? 'data: {"choices":[{"delta":{"content":"Original"}}]}\n\ndata: [DONE]\n\n'
+                : '{"choices":[{"message":{"content":"Original"}},{"message":{"content":"Second"}}]}';
+            const originalResponse = new Response(raw, { headers: { 'X-Original-Response': 'kept' } });
+            const env = await setup({}, () => originalResponse);
+            const previousRelay = globalThis.sillyRelayReplies;
+            const previousPop = globalThis.sillyPopNotifications;
+            globalThis.sillyRelayReplies = { apiVersion: 1, begin() { assert.fail('must not consume native Relay ticket'); } };
+            globalThis.sillyPopNotifications = { apiVersion: 1, beginReview() { assert.fail('must not defer notification for skipped review'); } };
+            const controller = new AbortController();
+            try {
+                const response = await env.send({ ...env.body, ...flags, stream }, { signal: controller.signal });
+                assert.equal(response, originalResponse);
+                assert.equal(response.bodyUsed, false);
+                assert.equal(await response.text(), raw);
+                assert.equal(env.sent.length, 1);
+                for (const [key, value] of Object.entries({ ...flags, stream })) assert.equal(env.sent[0].body[key], value);
+                assert.equal(env.sent[0].options.signal, controller.signal);
+                assert.equal(env.sent[0].options.headers['X-Original'], 'preserved');
+                assert.equal(controller.signal.aborted, false);
+                assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, `검수 건너뜀 · ${reason}`);
+            } finally {
+                if (previousRelay === undefined) delete globalThis.sillyRelayReplies; else globalThis.sillyRelayReplies = previousRelay;
+                if (previousPop === undefined) delete globalThis.sillyPopNotifications; else globalThis.sillyPopNotifications = previousPop;
+                env.cleanup();
+            }
+        });
+    }
+}
