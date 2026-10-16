@@ -10,13 +10,13 @@
 
     <div class="inline-drawer-content">
       <div class="ttotto-tabs" role="tablist" aria-label="또또 메뉴">
-        <button id="ttotto-tab-patterns" class="menu_button ttotto-tab is-active" type="button" role="tab" aria-selected="true" data-ttotto-tab="patterns">
+        <button id="ttotto-tab-patterns" class="menu_button ttotto-tab" type="button" role="tab" aria-selected="false" data-ttotto-tab="patterns">
           감지 목록 <span id="ttotto-pattern-count" class="ttotto-count">0</span>
         </button>
-        <button id="ttotto-tab-settings" class="menu_button ttotto-tab" type="button" role="tab" aria-selected="false" data-ttotto-tab="settings">설정</button>
+        <button id="ttotto-tab-settings" class="menu_button ttotto-tab is-active" type="button" role="tab" aria-selected="true" data-ttotto-tab="settings">설정</button>
       </div>
 
-      <section id="ttotto-panel-patterns" class="ttotto-panel" role="tabpanel" aria-labelledby="ttotto-tab-patterns">
+      <section id="ttotto-panel-patterns" class="ttotto-panel" role="tabpanel" aria-labelledby="ttotto-tab-patterns" hidden>
         <div class="ttotto-section-head">
           <div>
             <strong>이번 생성에서 피할 표현</strong>
@@ -53,7 +53,7 @@
         </div>
       </section>
 
-      <section id="ttotto-panel-settings" class="ttotto-panel" role="tabpanel" aria-labelledby="ttotto-tab-settings" hidden>
+      <section id="ttotto-panel-settings" class="ttotto-panel" role="tabpanel" aria-labelledby="ttotto-tab-settings">
         <label class="ttotto-setting-row" for="ttotto-chat-enabled">
           <span>
             <strong>현재 채팅에서 사용</strong>

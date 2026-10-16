@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.24';
+} from './detector.js?v=1.13.25';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.24';
+const EXTENSION_VERSION = '1.13.25';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2580,6 +2580,8 @@ function scheduleAnalysis({ smart = false, forceSmart = false, delay = 250 } = {
 
 function setTab(tabName) {
     if (!uiReady) return;
+    // The extension drawer is settings-only; the chat popup keeps both tabs.
+    if (!document.getElementById('ttotto-settings')?.classList.contains('ttotto-in-popup')) tabName = 'settings';
     document.querySelectorAll('#ttotto-settings [data-ttotto-tab]').forEach((button) => {
         const active = button.dataset.ttottoTab === tabName;
         button.classList.toggle('is-active', active);
@@ -4194,6 +4196,7 @@ function ttottoOpenPopup() {
     if (!settingsHomeParent) settingsHomeParent = panel.parentElement;
     document.getElementById('ttotto-popup-body').append(panel);
     panel.classList.add('ttotto-in-popup');
+    setTab('patterns');
     // JS 강제 중앙 고정 — 매번 열 때마다 다시 박아넣는다
     overlay.style.cssText = `display:flex !important; ${TTOTTO_OVERLAY_BASE_CSS}`;
     box.style.cssText = TTOTTO_POPUP_BOX_CSS;
@@ -4212,6 +4215,7 @@ function ttottoClosePopup() {
     if (overlay) overlay.style.cssText = `display:none !important; ${TTOTTO_OVERLAY_BASE_CSS}`;
     if (panel && settingsHomeParent) {
         panel.classList.remove('ttotto-in-popup');
+        setTab('settings');
         settingsHomeParent.append(panel);
     }
     popupOpen = false;

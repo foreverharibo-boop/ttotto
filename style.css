@@ -908,3 +908,9 @@
   padding: 0;
   margin: 0;
 }
+
+/* The extension drawer opens directly to settings; chat popup retains navigation. */
+#ttotto-settings:not(.ttotto-in-popup) .ttotto-tabs,
+#ttotto-settings:not(.ttotto-in-popup) #ttotto-panel-patterns {
+  display: none !important;
+}
