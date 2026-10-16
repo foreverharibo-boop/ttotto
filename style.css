@@ -886,12 +886,7 @@
   outline-offset: -3px;
 }
 
-#ttotto-settings .ttotto-group-status {
-  font-size: 0.8em;
-  font-weight: 400;
-  opacity: 0.75;
-  white-space: nowrap;
-}
+
 
 #ttotto-settings .ttotto-settings-group-body {
   padding: 0 10px 10px;

@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.26';
+} from './detector.js?v=1.13.27';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.26';
+const EXTENSION_VERSION = '1.13.27';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -3226,8 +3226,6 @@ function updateUi(analysisOverride = null) {
         strongEchoCheckbox.checked = Boolean(settings.echoPreventionStrong);
         strongEchoCheckbox.disabled = false;
     }
-    const echoModeStatus = document.getElementById('ttotto-echo-mode-status');
-    if (echoModeStatus) echoModeStatus.textContent = !enabled ? '현재 비활성' : settings.echoPreventionStrong ? '강화' : settings.echoPreventionEnabled ? '기본' : '꺼짐';
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
     const preserveLengthCheckbox = document.getElementById('ttotto-ban-preserve-length');
