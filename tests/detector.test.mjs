@@ -305,7 +305,10 @@ test('분량 유지 옵션은 기본 문구 한 줄만 교체하고 끄면 정�
         const changed = after.filter((line, i) => line !== before[i]);
         assert.equal(changed.length, 1);
         assert.match(changed[0], /Maintain the requested response length and level of detail/);
-        assert.match(changed[0], /Bans take priority over length/);
+        assert.doesNotMatch(enabled, /Bans take priority over length/);
+        assert.match(changed[0], /Do not delete or summarize scene-relevant emotions, actions, or information/);
+        assert.match(changed[0], /while fully complying with the bans/);
+        assert.match(changed[0], /Do not shorten the response because prohibited expressions cannot be used/);
         assert.equal(before.at(-1), '</ttotto_anti_repetition>');
         assert.equal(after.at(-1), before.at(-1));
     }

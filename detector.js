@@ -858,7 +858,7 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
         dialogue.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
     lines.push(exclusionInfo?.banPreserveLength
-        ? 'Keep all bans and avoidance rules above in force. When revising prohibited or repetitive wording, preserve the scene-relevant emotional and informational substance through fresh, natural phrasing and sentence construction. Maintain the requested response length and level of detail without padding, repetition, invented plot events, or forced replacement gestures. Bans take priority over length.'
+        ? 'Keep all bans and repetition-avoidance rules above in force. Do not delete or summarize scene-relevant emotions, actions, or information to avoid prohibited or repetitive wording. Preserve the intended meaning and develop it fully through fresh sentences and natural description that do not rely on prohibited expressions or evasive paraphrases. Do not merely swap synonyms or rework the same stock phrases. Maintain the requested response length and level of detail while fully complying with the bans. Do not shorten the response because prohibited expressions cannot be used. Avoid padding and repetition of the same content. Preserve established events, characterization, relationships, and tone; do not invent plot events or force replacement gestures merely to increase length.'
         : 'Do not force a replacement gesture or line merely to demonstrate variety; omit filler reactions when no natural alternative is needed.');
     lines.push('</ttotto_anti_repetition>');
     return lines.join('\n');
