@@ -62,290 +62,346 @@
           <input id="ttotto-chat-enabled" type="checkbox">
         </label>
 
-        <label class="ttotto-field" for="ttotto-window-size">
-          <span>분석 범위</span>
-          <select id="ttotto-window-size" class="text_pole">
-            <option value="10">최근 답변 10개</option>
-            <option value="20">최근 답변 20개</option>
-            <option value="30">최근 답변 30개</option>
-            <option value="50">최근 답변 50개</option>
-          </select>
-        </label>
+        <small class="ttotto-settings-help">기능 이름을 눌러 설정을 펼쳐요. 접어도 기능은 계속 적용돼요.</small>
 
-        <label class="ttotto-field" for="ttotto-sensitivity">
-          <span>감지 민감도</span>
-          <select id="ttotto-sensitivity" class="text_pole">
-            <option value="loose">느슨하게</option>
-            <option value="normal">보통</option>
-            <option value="strict">엄격하게</option>
-          </select>
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-narration-enabled">
-          <span>
-            <strong>서술 반복 검사</strong>
-            <small>행동·묘사·문장 구조를 분석해요</small>
-          </span>
-          <input id="ttotto-narration-enabled" type="checkbox">
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-dialogue-enabled">
-          <span>
-            <strong>대사 반복 검사</strong>
-            <small>같은 대사·말끝·질문 구조를 따로 분석해요</small>
-          </span>
-          <input id="ttotto-dialogue-enabled" type="checkbox">
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-echo-prevention-enabled">
-          <span>
-            <strong>직전 유저 말 되받기·에코 방지</strong>
-            <small>직전 유저 대사의 일부라도 캐릭터가 그대로 받아 말하거나, 의문형·인용형·비슷한 말로 되풀이하지 않게 해요. 출력 전 전체 대사를 다시 확인하며 API 호출은 없어요.</small>
-          </span>
-          <input id="ttotto-echo-prevention-enabled" type="checkbox">
-        </label>
-
-        <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-echo-prevention-strong">
-          <span>
-            <strong>에코 방지 강화 모드</strong>
-            <small>위반한 답변을 무효로 취급하고, 대사와 서술을 두 번 검사해 출력 전에 다시 쓰도록 강하게 지시해요. 임시 금지 구절도 최대 8개까지 사용하며 추가 API 호출은 없어요.</small>
-          </span>
-          <input id="ttotto-echo-prevention-strong" type="checkbox">
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-ban-prevention-strong">
-          <span>
-            <strong>금지어들 방지 강화 모드</strong>
-            <small>전역·캐릭터별 금지어와 구조 금지를 모두 강화해요. 하나라도 위반하면 답변을 무효로 취급하고, 대사와 서술을 두 번 검사해 출력 전에 다시 쓰도록 강하게 지시해요. 추가 API 호출은 없어요.</small>
-          </span>
-          <input id="ttotto-ban-prevention-strong" type="checkbox">
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-ban-preserve-length">
-          <span>
-            <strong>금지 표현 대체 시 분량 유지 · 실험</strong>
-            <small>기본은 꺼짐이에요. 켜면 ‘불필요한 반응 생략’ 지시를 ‘금지 규칙을 지키면서 감정·정보와 요청한 분량 유지’ 지시로 교체해요. 끄면 기존 문구로 돌아와요. 주입문 보기에서 확인할 수 있으며 실제 길이는 AI에 따라 달라져요.</small>
-          </span>
-          <input id="ttotto-ban-preserve-length" type="checkbox">
-        </label>
-
-        <div class="ttotto-guard-settings" role="group" aria-labelledby="ttotto-response-guard-title">
-          <strong id="ttotto-response-guard-title">Jev 표시 전 검수</strong>
-          <label class="ttotto-setting-row" for="ttotto-response-guard-enabled">
-            <span><strong>답변 표시 전 검수·수정</strong><small>금지어·금지 구조와 실제 주입된 반복 방지 항목을 검사해요. 초안 전체와 위반 위치를 같은 생성 모델에 보내 최소 수정을 요청하고, AI가 작성한 전체 수정본을 다시 확인해요. 수정 한도에 도달하면 위반이 남아도 마지막 답변을 표시해요. 재작성 실패 시에는 마지막으로 정상 수신한 답변을 표시하고 감지 목록에 상태를 남겨요. 0회는 검사만 하고 표시해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
-            <input id="ttotto-response-guard-enabled" type="checkbox">
-          </label>
-          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-ban">
-            <span><strong>금지어·금지 구조 검수</strong><small>현재 캐릭터에 적용되는 금지어·구조와 실제 주입된 반복 방지 항목을 검사해요. 정확한 금지어는 Jev 키 없이도 코드로 검사·재요청하고, 구조·의미 규칙만 Jev에 보내요.</small></span>
-            <input id="ttotto-response-guard-ban" type="checkbox">
-          </label>
-          <!-- Experimental Jev echo review retained for future use; execution is also gated in index.js. -->
-          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-echo" hidden>
-            <span><strong>에코 검수</strong><small>주 생성 요청의 직전 유저 턴과 비교해요. 기존 에코 방지를 꺼두면 이 검사도 쉬어요.</small></span>
-            <input id="ttotto-response-guard-echo" type="checkbox" disabled>
-          </label>
-          <label class="ttotto-field" for="ttotto-response-guard-rewrites">
-            <span>최대 수정 요청 횟수</span>
-            <select id="ttotto-response-guard-rewrites" class="text_pole">
-              <option value="0">0회 · 검수 후 바로 표시</option><option value="1">1회</option><option value="2">2회</option><option value="3">3회</option>
-            </select>
-          </label>
-          <label class="ttotto-field" for="ttotto-response-guard-confidence">
-            <span>구조 위반 확정 기준 · 유하게</span>
-            <select id="ttotto-response-guard-confidence" class="text_pole" hidden disabled>
-              <option value="0.5">0.50</option><option value="0.7">0.70 · 기본</option><option value="0.85">0.85</option><option value="0.95">0.95</option>
-            </select>
-            <small>구조 위반은 Jev 확신도 0.95 이상일 때 수정해요. 확정 위반의 문장 위치를 못 찾으면 AI에게 해당 부분을 찾아 최소 수정하도록 요청해요. 비슷한 단어·주제나 추측만으로는 수정하지 않아요. 정확한 금지어 검사는 그대로예요. 확신도는 실제 정답률을 뜻하지 않아요.</small>
-          </label>
-          <label class="ttotto-field" for="ttotto-jev-key">
-            <span>Jev API 키</span><input id="ttotto-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="또또 전용 키 입력">
-          </label>
-          <div class="ttotto-button-row"><button id="ttotto-jev-connect" class="menu_button" type="button">연결 확인·저장</button><button id="ttotto-jev-delete" class="menu_button" type="button">또또 키 삭제</button></div>
-          <small id="ttotto-jev-key-status" role="status">Jev API 키를 연결해 주세요.</small>
-        </div>
-
-        <div class="ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
-          <div class="ttotto-important-prompts-heading">
-            <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>
-            <small class="ttotto-important-prompts-source">출처 : 공유달글 weave 프리셋</small>
-          </div>
-
-          <div class="ttotto-important-prompt-item">
-            <div class="ttotto-important-prompt-row">
-              <input id="ttotto-metagaming-prompt-enabled" type="checkbox" aria-label="메타게이밍 방지 활성화">
-              <label for="ttotto-metagaming-prompt-enabled">메타게이밍 방지</label>
-              <span class="ttotto-original-only">원본</span>
+        <details id="ttotto-group-bans" class="ttotto-settings-group">
+          <summary><span>금지어·금지 구조</span></summary>
+          <div class="ttotto-settings-group-body">
+            <div class="ttotto-subsection">
+              <strong>전역 금지어</strong>
+              <small>모든 캐릭터의 생성에 항상 주입돼요. 원문 언어로 입력해 주세요.</small>
+              <div class="ttotto-ban-compose">
+                <input id="ttotto-global-ban-term" class="text_pole" type="text" maxlength="80" placeholder="예: shivers down her spine">
+                <button id="ttotto-add-global-ban" class="menu_button" type="button">전역 금지 추가</button>
+              </div>
+              <div class="ttotto-ban-compose">
+                <input id="ttotto-global-structure-desc" class="text_pole" type="text" maxlength="200" placeholder="전역으로 금지할 서술 구조 설명 (예: not A but B 대조 구문)">
+                <button id="ttotto-add-global-structure" class="menu_button" type="button">전역 구조 추가</button>
+              </div>
+              <div id="ttotto-global-ban-list" class="ttotto-ban-list"></div>
             </div>
-            <small class="ttotto-important-prompt-description">캐릭터가 장면 밖 정보나 타인의 속마음을 이미 아는 것처럼 행동하지 않게 해요.</small>
-          </div>
 
-          <div class="ttotto-important-prompt-item">
-            <div class="ttotto-important-prompt-row">
-              <input id="ttotto-character-ai-prompt-enabled" type="checkbox" aria-label="캐릭터 AI화 방지 활성화">
-              <label for="ttotto-character-ai-prompt-enabled">캐릭터 AI화 방지</label>
-              <span class="ttotto-original-only">원본</span>
+            <div class="ttotto-subsection">
+              <strong>캐릭터별 영구 금지</strong>
+              <small>카드 UUID별로 저장되고, 같은 이름의 다른 카드는 섞이지 않아요.</small>
+              <div class="ttotto-ban-compose ttotto-ban-compose-three">
+                <select id="ttotto-ban-character" class="text_pole" aria-label="금지어를 적용할 캐릭터"></select>
+                <input id="ttotto-ban-term" class="text_pole" type="text" maxlength="80" placeholder="예: jaw muscles (원문 언어)">
+                <button id="ttotto-add-ban" class="menu_button" type="button">금지어 추가</button>
+              </div>
+              <div class="ttotto-ban-compose">
+                <input id="ttotto-structure-desc" class="text_pole" type="text" maxlength="200" placeholder="금지할 서술 구조 설명 (예: 문장 끝을 계속 ~했다로 끝냄)">
+                <button id="ttotto-add-structure" class="menu_button" type="button">구조 금지 추가</button>
+              </div>
+              <div id="ttotto-ban-list" class="ttotto-ban-list"></div>
+              <small>영구 금지어와 구조 금지는 개수 제한 없이 매 생성에 주입돼요. 목록이 많으면 입력 토큰이 늘 수 있지만, 공통 지침은 한 번만 넣고 일반 금지어는 압축해 전달해요. AI가 지시를 무시할 가능성까지 0%로 만들 수는 없어요.</small>
             </div>
-            <small class="ttotto-important-prompt-description">캐릭터가 만능 AI처럼 답하지 않고 설정·경험·기억 범위 안에서 자연스럽게 반응하게 해요.</small>
-          </div>
-        </div>
 
-        <div class="ttotto-prompt-placement-section" role="group" aria-labelledby="ttotto-prompt-placement-title">
-          <strong id="ttotto-prompt-placement-title">프리셋 주입 위치</strong>
-          <small>금지어와 에코는 서로 다른 위치를 고를 수 있어요. 메타게이밍 방지와 캐릭터 AI화 방지는 WEAVE 한 세트로 같은 위치에 들어가요.<br>⭐ weave의 프롬은 탈옥과 가까운 자리에 넣어주세요. ⭐</small>
-          <label class="ttotto-placement-row" for="ttotto-ban-prompt-position">
-            <span>또또 금지어</span>
-            <select id="ttotto-ban-prompt-position" class="text_pole"></select>
-          </label>
-          <label class="ttotto-placement-row" for="ttotto-echo-prompt-position">
-            <span>또또 에코 방지</span>
-            <select id="ttotto-echo-prompt-position" class="text_pole"></select>
-          </label>
-          <label class="ttotto-placement-row" for="ttotto-weave-prompt-position">
-            <span>WEAVE 두 프롬프트</span>
-            <select id="ttotto-weave-prompt-position" class="text_pole"></select>
-          </label>
-          <button id="ttotto-refresh-preset-prompts" type="button" class="menu_button">프리셋 목록 새로고침</button>
-        </div>
-
-        <div class="ttotto-prompt-order-section" role="group" aria-labelledby="ttotto-prompt-order-title">
-          <strong id="ttotto-prompt-order-title">주입 순서</strong>
-          <small>같은 위치를 고른 묶음은 위에서 아래 순서대로 합쳐져요. WEAVE 안에서는 메타게이밍 방지 다음에 캐릭터 AI화 방지가 붙어요.</small>
-          <div id="ttotto-prompt-order-list" class="ttotto-prompt-order-list"></div>
-        </div>
-
-        <label class="ttotto-setting-row" for="ttotto-drag-ban-menu-enabled">
-          <span>
-            <strong>드래그 금지 메뉴 표시</strong>
-            <small>AI 답변을 드래그할 때 ‘표현 / 구조’ 빠른 등록 메뉴를 띄워요. 끄면 드래그 선택 감시도 함께 중지돼요.</small>
-          </span>
-          <input id="ttotto-drag-ban-menu-enabled" type="checkbox">
-        </label>
-
-        <label class="ttotto-field" for="ttotto-drag-ai-profile">
-          <span>드래그 금지 보조 AI 연결 프로필</span>
-          <select id="ttotto-drag-ai-profile" class="text_pole"></select>
-          <small>구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요.</small>
-        </label>
-
-        <label class="ttotto-setting-row" for="ttotto-structure-ai">
-          <span>
-            <strong>구조 금지 AI 분석</strong>
-            <small>켜면 위에서 고른 연결로 구조 지시문 생성 + 번역문 드래그 시 원문 역추적을 API로 처리해요 (호출 발생). 끄면 두 기능 모두 API 호출 없이 즉시 자체 규칙 분석/수동 입력 폴백으로 동작해요.</small>
-          </span>
-          <input id="ttotto-structure-ai" type="checkbox">
-        </label>
-
-        <div class="ttotto-subsection">
-          <strong>전역 금지어</strong>
-          <small>모든 캐릭터의 생성에 항상 주입돼요. 원문 언어로 입력해 주세요.</small>
-          <div class="ttotto-ban-compose">
-            <input id="ttotto-global-ban-term" class="text_pole" type="text" maxlength="80" placeholder="예: shivers down her spine">
-            <button id="ttotto-add-global-ban" class="menu_button" type="button">전역 금지 추가</button>
-          </div>
-          <div class="ttotto-ban-compose">
-            <input id="ttotto-global-structure-desc" class="text_pole" type="text" maxlength="200" placeholder="전역으로 금지할 서술 구조 설명 (예: not A but B 대조 구문)">
-            <button id="ttotto-add-global-structure" class="menu_button" type="button">전역 구조 추가</button>
-          </div>
-          <div id="ttotto-global-ban-list" class="ttotto-ban-list"></div>
-        </div>
-
-        <div class="ttotto-offense-guide">
-          <strong>불꽃은 실제 위반 기록이에요</strong>
-          <small>금지 등록 후 현재 채팅의 원문 본문에 정확한 표현이 확인된 메시지만 세요. 생각·태그·인포블럭·코드·화면 번역문은 제외하며, 표시된 원문을 눌러 해당 메시지로 이동할 수 있어요.</small>
-        </div>
-
-        <div class="ttotto-subsection">
-          <strong>캐릭터별 영구 금지</strong>
-          <small>카드 UUID별로 저장되고, 같은 이름의 다른 카드는 섞이지 않아요.</small>
-          <div class="ttotto-ban-compose ttotto-ban-compose-three">
-            <select id="ttotto-ban-character" class="text_pole" aria-label="금지어를 적용할 캐릭터"></select>
-            <input id="ttotto-ban-term" class="text_pole" type="text" maxlength="80" placeholder="예: jaw muscles (원문 언어)">
-            <button id="ttotto-add-ban" class="menu_button" type="button">금지어 추가</button>
-          </div>
-          <div class="ttotto-ban-compose">
-            <input id="ttotto-structure-desc" class="text_pole" type="text" maxlength="200" placeholder="금지할 서술 구조 설명 (예: 문장 끝을 계속 ~했다로 끝냄)">
-            <button id="ttotto-add-structure" class="menu_button" type="button">구조 금지 추가</button>
-          </div>
-          <div id="ttotto-ban-list" class="ttotto-ban-list"></div>
-          <small>영구 금지어와 구조 금지는 개수 제한 없이 매 생성에 주입돼요. 목록이 많으면 입력 토큰이 늘 수 있지만, 공통 지침은 한 번만 넣고 일반 금지어는 압축해 전달해요. AI가 지시를 무시할 가능성까지 0%로 만들 수는 없어요.</small>
-        </div>
-
-        <label class="ttotto-setting-row" for="ttotto-cross-memory-enabled">
-          <span>
-            <strong>같은 캐릭터의 지난 채팅도 기억</strong>
-            <small>UUID가 같은 카드의 원문 답변을 최대 50개 저장해 함께 분석해요</small>
-          </span>
-          <input id="ttotto-cross-memory-enabled" type="checkbox">
-        </label>
-
-        <div class="ttotto-subsection">
-          <strong>분석 제외 블록</strong>
-          <small>인포 패널처럼 매번 나와야 하는 꾸밈 블록을 반복 분석에서 빼요.</small>
-          <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-exclude-all-tags">
-            <span>
-              <strong>태그·HTML 블록 전부 제외</strong>
-              <small>&lt;아무이름&gt;…&lt;/아무이름&gt;, &lt;div&gt;…&lt;/div&gt; 안의 내용까지 자동으로 빼요</small>
-            </span>
-            <input id="ttotto-exclude-all-tags" type="checkbox">
-          </label>
-          <div id="ttotto-custom-exclusions">
-            <small>위 기능을 끈 경우에만 필요한 블록을 직접 지정할 수 있어요.</small>
-            <label class="ttotto-stack-field" for="ttotto-excluded-tags">
-              <span>제외 태그</span>
-              <input id="ttotto-excluded-tags" class="text_pole" type="text" placeholder="Status_block, Inventory">
+            <label class="ttotto-setting-row" for="ttotto-ban-prevention-strong">
+              <span>
+                <strong>금지어들 방지 강화 모드</strong>
+                <small>전역·캐릭터별 금지어와 구조 금지를 모두 강화해요. 하나라도 위반하면 답변을 무효로 취급하고, 대사와 서술을 두 번 검사해 출력 전에 다시 쓰도록 강하게 지시해요. 추가 API 호출은 없어요.</small>
+              </span>
+              <input id="ttotto-ban-prevention-strong" type="checkbox">
             </label>
-            <label class="ttotto-stack-field" for="ttotto-excluded-classes">
-              <span>제외 클래스</span>
-              <input id="ttotto-excluded-classes" class="text_pole" type="text" placeholder=".status-card, .inventory-card">
+
+            <label class="ttotto-setting-row" for="ttotto-ban-preserve-length">
+              <span>
+                <strong>금지 표현 대체 시 분량 유지 · 실험</strong>
+                <small>기본은 꺼짐이에요. 켜면 ‘불필요한 반응 생략’ 지시를 ‘금지 규칙을 지키면서 감정·정보와 요청한 분량 유지’ 지시로 교체해요. 끄면 기존 문구로 돌아와요. 주입문 보기에서 확인할 수 있으며 실제 길이는 AI에 따라 달라져요.</small>
+              </span>
+              <input id="ttotto-ban-preserve-length" type="checkbox">
             </label>
+
+            <div class="ttotto-offense-guide">
+              <strong>불꽃은 실제 위반 기록이에요</strong>
+              <small>금지 등록 후 현재 채팅의 원문 본문에 정확한 표현이 확인된 메시지만 세요. 생각·태그·인포블럭·코드·화면 번역문은 제외하며, 표시된 원문을 눌러 해당 메시지로 이동할 수 있어요.</small>
+            </div>
+
           </div>
-        </div>
+        </details>
 
-        <label class="ttotto-setting-row" for="ttotto-smart-enabled">
-          <span>
-            <strong>AI 정밀 분석</strong>
-            <small>의미가 비슷한 반복까지 검사하며 API 사용량이 발생해요</small>
-          </span>
-          <input id="ttotto-smart-enabled" type="checkbox">
-        </label>
+        <details id="ttotto-group-echo" class="ttotto-settings-group">
+          <summary><span>에코 방지</span> <span id="ttotto-echo-mode-status" class="ttotto-group-status" aria-live="polite"></span></summary>
+          <div class="ttotto-settings-group-body">
+            <label class="ttotto-setting-row" for="ttotto-echo-prevention-enabled">
+              <span>
+                <strong>기본 에코 방지</strong>
+                <small>직전 유저의 말·행동을 되풀이하지 않도록 AI에 지시해요. AI에게 출력 전 자체 확인을 요청하며, 별도 검수 API 호출은 없어요.</small>
+              </span>
+              <input id="ttotto-echo-prevention-enabled" type="checkbox">
+            </label>
 
-        <label class="ttotto-field" for="ttotto-smart-interval">
-          <span>정밀 분석 간격</span>
-          <select id="ttotto-smart-interval" class="text_pole">
-            <option value="2">새 답변 2개마다</option>
-            <option value="3">새 답변 3개마다</option>
-            <option value="5">새 답변 5개마다</option>
-          </select>
-        </label>
+            <label class="ttotto-setting-row" for="ttotto-echo-prevention-strong">
+              <span>
+                <strong>에코 방지 강화 모드</strong>
+                <small>이것만 켜도 기본 에코 방지 지시까지 포함돼요. 대사·서술을 각각 자체 확인하도록 더 강하게 요청하며, 별도 검수·자동 재요청 기능은 아니에요. 에코 방지를 완전히 끄려면 두 옵션을 모두 꺼 주세요.</small>
+              </span>
+              <input id="ttotto-echo-prevention-strong" type="checkbox">
+            </label>
 
-        <label class="ttotto-field" for="ttotto-profile">
-          <span>정밀 분석 연결 프로필</span>
-          <select id="ttotto-profile" class="text_pole">
-            <option value="">현재 연결 사용</option>
-          </select>
-        </label>
+          </div>
+        </details>
 
-        <label class="ttotto-field" for="ttotto-max-patterns">
-          <span>한 번에 주입할 항목</span>
-          <select id="ttotto-max-patterns" class="text_pole">
-            <option value="4">최대 4개</option>
-            <option value="6">최대 6개</option>
-            <option value="8">최대 8개</option>
-            <option value="10">최대 10개</option>
-          </select>
-        </label>
+        <details id="ttotto-group-repetition" class="ttotto-settings-group">
+          <summary><span>반복 분석</span></summary>
+          <div class="ttotto-settings-group-body">
+            <label class="ttotto-field" for="ttotto-window-size">
+              <span>반복 검사할 최근 AI 답변 수</span>
+              <select id="ttotto-window-size" class="text_pole">
+                <option value="10">최근 답변 10개</option>
+                <option value="20">최근 답변 20개</option>
+                <option value="30">최근 답변 30개</option>
+                <option value="50">최근 답변 50개</option>
+              </select>
+            </label>
 
-        <div class="ttotto-field">
-          <span>분석할 텍스트</span>
-          <small>실리태번에 저장된 원문만 읽어요. 원문을 확인할 수 없는 번역문은 분석에서 제외해요.</small>
-        </div>
+            <label class="ttotto-field" for="ttotto-sensitivity">
+              <span>감지 민감도</span>
+              <select id="ttotto-sensitivity" class="text_pole">
+                <option value="loose">느슨하게</option>
+                <option value="normal">보통</option>
+                <option value="strict">엄격하게</option>
+              </select>
+            </label>
 
-        <div class="ttotto-button-row">
-          <button id="ttotto-clear-offenses" class="menu_button" type="button">위반 기록 전체 초기화</button>
-          <button id="ttotto-clear-ignored" class="menu_button" type="button">캐릭터 허용 목록 초기화</button>
-          <button id="ttotto-clear-smart" class="menu_button" type="button">정밀 분석 기록 초기화</button>
-          <button id="ttotto-clear-memory" class="menu_button" type="button">현재 캐릭터의 지난 채팅 기억 삭제</button>
-        </div>
+            <label class="ttotto-setting-row" for="ttotto-narration-enabled">
+              <span>
+                <strong>서술 반복 검사</strong>
+                <small>행동·묘사·문장 구조를 분석해요</small>
+              </span>
+              <input id="ttotto-narration-enabled" type="checkbox">
+            </label>
+
+            <label class="ttotto-setting-row" for="ttotto-dialogue-enabled">
+              <span>
+                <strong>대사 반복 검사</strong>
+                <small>같은 대사·말끝·질문 구조를 따로 분석해요</small>
+              </span>
+              <input id="ttotto-dialogue-enabled" type="checkbox">
+            </label>
+
+            <label class="ttotto-field" for="ttotto-max-patterns">
+              <span>자동 감지 반복 항목 주입 수</span>
+              <select id="ttotto-max-patterns" class="text_pole">
+                <option value="4">최대 4개</option>
+                <option value="6">최대 6개</option>
+                <option value="8">최대 8개</option>
+                <option value="10">최대 10개</option>
+              </select>
+            </label>
+
+            <label class="ttotto-setting-row" for="ttotto-cross-memory-enabled">
+              <span>
+                <strong>같은 캐릭터의 지난 채팅도 기억</strong>
+                <small>UUID가 같은 카드의 원문 답변을 최대 50개 저장해 함께 분석해요</small>
+              </span>
+              <input id="ttotto-cross-memory-enabled" type="checkbox">
+            </label>
+
+            <div class="ttotto-subsection">
+              <strong>분석 제외 블록</strong>
+              <small>인포 패널처럼 매번 나와야 하는 꾸밈 블록을 반복 분석에서 빼요.</small>
+              <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-exclude-all-tags">
+                <span>
+                  <strong>태그·HTML 블록 전부 제외</strong>
+                  <small>&lt;아무이름&gt;…&lt;/아무이름&gt;, &lt;div&gt;…&lt;/div&gt; 안의 내용까지 자동으로 빼요</small>
+                </span>
+                <input id="ttotto-exclude-all-tags" type="checkbox">
+              </label>
+              <div id="ttotto-custom-exclusions">
+                <small>위 기능을 끈 경우에만 필요한 블록을 직접 지정할 수 있어요.</small>
+                <label class="ttotto-stack-field" for="ttotto-excluded-tags">
+                  <span>제외 태그</span>
+                  <input id="ttotto-excluded-tags" class="text_pole" type="text" placeholder="Status_block, Inventory">
+                </label>
+                <label class="ttotto-stack-field" for="ttotto-excluded-classes">
+                  <span>제외 클래스</span>
+                  <input id="ttotto-excluded-classes" class="text_pole" type="text" placeholder=".status-card, .inventory-card">
+                </label>
+              </div>
+            </div>
+
+            <div class="ttotto-field">
+              <span>분석할 텍스트</span>
+              <small>실리태번에 저장된 원문만 읽어요. 원문을 확인할 수 없는 번역문은 분석에서 제외해요.</small>
+            </div>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-guard" class="ttotto-settings-group">
+          <summary><span>답변 검수·자동 수정</span></summary>
+          <div class="ttotto-settings-group-body">
+            <div class="ttotto-guard-settings" role="group" aria-labelledby="ttotto-response-guard-title">
+              <strong id="ttotto-response-guard-title">Jev 표시 전 검수</strong>
+              <label class="ttotto-setting-row" for="ttotto-response-guard-enabled">
+                <span><strong>답변 표시 전 검수·수정</strong><small>금지어·금지 구조와 실제 주입된 반복 방지 항목을 검사해요. 초안 전체와 위반 위치를 같은 생성 모델에 보내 최소 수정을 요청하고, AI가 작성한 전체 수정본을 다시 확인해요. 수정 한도에 도달하면 위반이 남아도 마지막 답변을 표시해요. 재작성 실패 시에는 마지막으로 정상 수신한 답변을 표시하고 감지 목록에 상태를 남겨요. 0회는 검사만 하고 표시해요. WEAVE는 이 검수에 포함하지 않아요.</small></span>
+                <input id="ttotto-response-guard-enabled" type="checkbox">
+              </label>
+              <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-ban">
+                <span><strong>금지어·금지 구조 검수</strong><small>현재 캐릭터에 적용되는 금지어·구조와 실제 주입된 반복 방지 항목을 검사해요. 정확한 금지어는 Jev 키 없이도 코드로 검사·재요청하고, 구조·의미 규칙만 Jev에 보내요.</small></span>
+                <input id="ttotto-response-guard-ban" type="checkbox">
+              </label>
+              <!-- Experimental Jev echo review retained for future use; execution is also gated in index.js. -->
+              <label class="ttotto-setting-row ttotto-inner-setting" for="ttotto-response-guard-echo" hidden>
+                <span><strong>에코 검수</strong><small>주 생성 요청의 직전 유저 턴과 비교해요. 기존 에코 방지를 꺼두면 이 검사도 쉬어요.</small></span>
+                <input id="ttotto-response-guard-echo" type="checkbox" disabled>
+              </label>
+              <label class="ttotto-field" for="ttotto-response-guard-rewrites">
+                <span>최대 수정 요청 횟수</span>
+                <select id="ttotto-response-guard-rewrites" class="text_pole">
+                  <option value="0">0회 · 검수 후 바로 표시</option><option value="1">1회</option><option value="2">2회</option><option value="3">3회</option>
+                </select>
+              </label>
+              <label class="ttotto-field" for="ttotto-response-guard-confidence">
+                <span>구조 위반 확정 기준 · 유하게</span>
+                <select id="ttotto-response-guard-confidence" class="text_pole" hidden disabled>
+                  <option value="0.5">0.50</option><option value="0.7">0.70 · 기본</option><option value="0.85">0.85</option><option value="0.95">0.95</option>
+                </select>
+                <small>구조 위반은 Jev 확신도 0.95 이상일 때 수정해요. 확정 위반의 문장 위치를 못 찾으면 AI에게 해당 부분을 찾아 최소 수정하도록 요청해요. 비슷한 단어·주제나 추측만으로는 수정하지 않아요. 정확한 금지어 검사는 그대로예요. 확신도는 실제 정답률을 뜻하지 않아요.</small>
+              </label>
+              <label class="ttotto-field" for="ttotto-jev-key">
+                <span>Jev API 키</span><input id="ttotto-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="또또 전용 키 입력">
+              </label>
+              <div class="ttotto-button-row"><button id="ttotto-jev-connect" class="menu_button" type="button">연결 확인·저장</button><button id="ttotto-jev-delete" class="menu_button" type="button">또또 키 삭제</button></div>
+              <small id="ttotto-jev-key-status" role="status">Jev API 키를 연결해 주세요.</small>
+            </div>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-weave" class="ttotto-settings-group">
+          <summary><span>WEAVE 프롬프트</span></summary>
+          <div class="ttotto-settings-group-body">
+            <div class="ttotto-important-prompts" role="group" aria-labelledby="ttotto-important-prompts-title">
+              <div class="ttotto-important-prompts-heading">
+                <strong id="ttotto-important-prompts-title">WEAVE 프롬프트</strong>
+                <small class="ttotto-important-prompts-source">출처 : 공유달글 weave 프리셋</small>
+              </div>
+
+              <div class="ttotto-important-prompt-item">
+                <div class="ttotto-important-prompt-row">
+                  <input id="ttotto-metagaming-prompt-enabled" type="checkbox" aria-label="메타게이밍 방지 활성화">
+                  <label for="ttotto-metagaming-prompt-enabled">메타게이밍 방지</label>
+                  <span class="ttotto-original-only">원본</span>
+                </div>
+                <small class="ttotto-important-prompt-description">캐릭터가 장면 밖 정보나 타인의 속마음을 이미 아는 것처럼 행동하지 않게 해요.</small>
+              </div>
+
+              <div class="ttotto-important-prompt-item">
+                <div class="ttotto-important-prompt-row">
+                  <input id="ttotto-character-ai-prompt-enabled" type="checkbox" aria-label="캐릭터 AI화 방지 활성화">
+                  <label for="ttotto-character-ai-prompt-enabled">캐릭터 AI화 방지</label>
+                  <span class="ttotto-original-only">원본</span>
+                </div>
+                <small class="ttotto-important-prompt-description">캐릭터가 만능 AI처럼 답하지 않고 설정·경험·기억 범위 안에서 자연스럽게 반응하게 해요.</small>
+              </div>
+            </div>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-placement" class="ttotto-settings-group">
+          <summary><span>주입 위치·순서</span></summary>
+          <div class="ttotto-settings-group-body">
+            <div class="ttotto-prompt-placement-section" role="group" aria-labelledby="ttotto-prompt-placement-title">
+              <strong id="ttotto-prompt-placement-title">프리셋 주입 위치</strong>
+              <small>금지어와 에코는 서로 다른 위치를 고를 수 있어요. 메타게이밍 방지와 캐릭터 AI화 방지는 WEAVE 한 세트로 같은 위치에 들어가요.<br>⭐ weave의 프롬은 탈옥과 가까운 자리에 넣어주세요. ⭐</small>
+              <label class="ttotto-placement-row" for="ttotto-ban-prompt-position">
+                <span>또또 금지어</span>
+                <select id="ttotto-ban-prompt-position" class="text_pole"></select>
+              </label>
+              <label class="ttotto-placement-row" for="ttotto-echo-prompt-position">
+                <span>또또 에코 방지</span>
+                <select id="ttotto-echo-prompt-position" class="text_pole"></select>
+              </label>
+              <label class="ttotto-placement-row" for="ttotto-weave-prompt-position">
+                <span>WEAVE 두 프롬프트</span>
+                <select id="ttotto-weave-prompt-position" class="text_pole"></select>
+              </label>
+              <button id="ttotto-refresh-preset-prompts" type="button" class="menu_button">프리셋 목록 새로고침</button>
+            </div>
+
+            <div class="ttotto-prompt-order-section" role="group" aria-labelledby="ttotto-prompt-order-title">
+              <strong id="ttotto-prompt-order-title">주입 순서</strong>
+              <small>같은 위치를 고른 묶음은 위에서 아래 순서대로 합쳐져요. WEAVE 안에서는 메타게이밍 방지 다음에 캐릭터 AI화 방지가 붙어요.</small>
+              <div id="ttotto-prompt-order-list" class="ttotto-prompt-order-list"></div>
+            </div>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-drag" class="ttotto-settings-group">
+          <summary><span>드래그로 금지 등록</span></summary>
+          <div class="ttotto-settings-group-body">
+            <label class="ttotto-setting-row" for="ttotto-drag-ban-menu-enabled">
+              <span>
+                <strong>드래그 금지 메뉴 표시</strong>
+                <small>AI 답변을 드래그할 때 ‘표현 / 구조’ 빠른 등록 메뉴를 띄워요. 끄면 드래그 선택 감시도 함께 중지돼요.</small>
+              </span>
+              <input id="ttotto-drag-ban-menu-enabled" type="checkbox">
+            </label>
+
+            <label class="ttotto-field" for="ttotto-drag-ai-profile">
+              <span>드래그 금지 보조 AI 연결 프로필</span>
+              <select id="ttotto-drag-ai-profile" class="text_pole"></select>
+              <small>구조 금지 AI 분석을 켰을 때만 선택한 연결로 API를 호출해요.</small>
+            </label>
+
+            <label class="ttotto-setting-row" for="ttotto-structure-ai">
+              <span>
+                <strong>구조 금지 AI 분석</strong>
+                <small>켜면 위에서 고른 연결로 구조 지시문 생성 + 번역문 드래그 시 원문 역추적을 API로 처리해요 (호출 발생). 끄면 두 기능 모두 API 호출 없이 즉시 자체 규칙 분석/수동 입력 폴백으로 동작해요.</small>
+              </span>
+              <input id="ttotto-structure-ai" type="checkbox">
+            </label>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-smart" class="ttotto-settings-group">
+          <summary><span>AI 정밀 분석</span></summary>
+          <div class="ttotto-settings-group-body">
+            <label class="ttotto-setting-row" for="ttotto-smart-enabled">
+              <span>
+                <strong>AI 정밀 분석</strong>
+                <small>의미가 비슷한 반복까지 검사하며 API 사용량이 발생해요</small>
+              </span>
+              <input id="ttotto-smart-enabled" type="checkbox">
+            </label>
+
+            <label class="ttotto-field" for="ttotto-smart-interval">
+              <span>정밀 분석 간격</span>
+              <select id="ttotto-smart-interval" class="text_pole">
+                <option value="2">새 답변 2개마다</option>
+                <option value="3">새 답변 3개마다</option>
+                <option value="5">새 답변 5개마다</option>
+              </select>
+            </label>
+
+            <label class="ttotto-field" for="ttotto-profile">
+              <span>정밀 분석 연결 프로필</span>
+              <select id="ttotto-profile" class="text_pole">
+                <option value="">현재 연결 사용</option>
+              </select>
+            </label>
+
+          </div>
+        </details>
+
+        <details id="ttotto-group-records" class="ttotto-settings-group">
+          <summary><span>기록 관리·초기화</span></summary>
+          <div class="ttotto-settings-group-body">
+            <div class="ttotto-button-row">
+              <button id="ttotto-clear-offenses" class="menu_button" type="button">위반 기록 전체 초기화</button>
+              <button id="ttotto-clear-ignored" class="menu_button" type="button">캐릭터 허용 목록 초기화</button>
+              <button id="ttotto-clear-smart" class="menu_button" type="button">정밀 분석 기록 초기화</button>
+              <button id="ttotto-clear-memory" class="menu_button" type="button">현재 캐릭터의 지난 채팅 기억 삭제</button>
+            </div>
+
+          </div>
+        </details>
 
         <small class="ttotto-save-note">설정은 변경 즉시 저장돼요.</small>
       </section>

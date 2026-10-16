@@ -87,16 +87,16 @@ test('에코 방지 강화 모드는 기본 에코 설정 바로 아래에 제�
     const profileIndex = html.indexOf('id="ttotto-drag-ai-profile"');
     assert.ok(normalIndex >= 0 && strongIndex > normalIndex && profileIndex > strongIndex);
     assert.match(html, /에코 방지 강화 모드/);
-    assert.match(html, /최대 8개/);
+    assert.match(html, /이것만 켜도 기본 에코 방지 지시까지 포함/);
 });
 
 test('금지어들 방지 강화 모드는 금지어와 구조 전체를 대상으로 제공된다', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const js = await readFile(new URL('../index.js', import.meta.url), 'utf8');
-    const echoStrongIndex = html.indexOf('id="ttotto-echo-prevention-strong"');
-    const banStrongIndex = html.indexOf('id="ttotto-ban-prevention-strong"');
-    const dragIndex = html.indexOf('id="ttotto-drag-ban-menu-enabled"');
-    assert.ok(echoStrongIndex >= 0 && banStrongIndex > echoStrongIndex && dragIndex > banStrongIndex);
+    const banGroup = html.match(/<details id="ttotto-group-bans"[^>]*>([\s\S]*?)<\/details>/)?.[1] ?? '';
+    assert.match(banGroup, /id="ttotto-ban-prevention-strong"/);
+    assert.match(banGroup, /id="ttotto-global-ban-list"/);
+    assert.match(banGroup, /id="ttotto-ban-list"/);
     assert.match(html, /금지어들 방지 강화 모드/);
     assert.match(html, /전역·캐릭터별 금지어와 구조 금지를 모두 강화/);
     assert.match(js, /banPreventionStrong:\s*false/);

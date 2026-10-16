@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.23';
+} from './detector.js?v=1.13.24';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.23';
+const EXTENSION_VERSION = '1.13.24';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -1775,12 +1775,16 @@ function latestUserSourceText(promptChat, contextChat) {
     return '';
 }
 
+function isEchoPreventionEnabled(settings) {
+    return Boolean(settings?.echoPreventionEnabled || settings?.echoPreventionStrong);
+}
+
 function buildGenerationInjectionSections(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
     // SillyTavern calls an ordinary send with an empty/undefined type on some
     // versions. Treat that as `normal`; otherwise every normal reply silently
     // skips all of 또또's generation-time injections.
     const type = String(generationType ?? '').trim().toLocaleLowerCase() || 'normal';
-    const echoApplies = Boolean(settings?.echoPreventionEnabled)
+    const echoApplies = isEchoPreventionEnabled(settings)
         && type !== 'continue'
         && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
     const strongEcho = echoApplies && Boolean(settings?.echoPreventionStrong);
@@ -2237,7 +2241,7 @@ export function createResponseGuardPlan(body, type = observedGenerationType) {
             : `${x.scope}${x.speaker ? ` by ${x.speaker}` : ''}`,
         term: x.kind === 'permanent-term' ? String(x.example ?? '') : '',
     })).filter(x => x.instruction) : [];
-    const echo = Boolean(JEV_ECHO_REVIEW_AVAILABLE && type !== 'continue' && settings.responseGuardEcho && settings.echoPreventionEnabled
+    const echo = Boolean(JEV_ECHO_REVIEW_AVAILABLE && type !== 'continue' && settings.responseGuardEcho && isEchoPreventionEnabled(settings)
         && chatHasUserTurn(context.chat));
     let userText = '';
     if (echo) {
@@ -3217,8 +3221,10 @@ function updateUi(analysisOverride = null) {
     const strongEchoCheckbox = document.getElementById('ttotto-echo-prevention-strong');
     if (strongEchoCheckbox) {
         strongEchoCheckbox.checked = Boolean(settings.echoPreventionStrong);
-        strongEchoCheckbox.disabled = !settings.echoPreventionEnabled;
+        strongEchoCheckbox.disabled = false;
     }
+    const echoModeStatus = document.getElementById('ttotto-echo-mode-status');
+    if (echoModeStatus) echoModeStatus.textContent = !enabled ? '현재 비활성' : settings.echoPreventionStrong ? '강화' : settings.echoPreventionEnabled ? '기본' : '꺼짐';
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
     const preserveLengthCheckbox = document.getElementById('ttotto-ban-preserve-length');
@@ -3254,7 +3260,7 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
-    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${settings.echoPreventionEnabled ? (settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
+    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${isEchoPreventionEnabled(settings) ? (settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
 
     renderPatterns(enabled ? analysis.patterns : []);
     const previewPrompt = enabled

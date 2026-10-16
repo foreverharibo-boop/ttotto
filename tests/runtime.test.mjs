@@ -971,6 +971,29 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
     await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
     assert.equal(promptCalls.at(-1)[1], '');
 
+    // Every saved basic/strong combination must agree with the actual injected
+    // prompt, including the old basic-OFF/strong-ON state after an update.
+    for (const basic of [false, true]) {
+        for (const strong of [false, true]) {
+            Object.assign(context.extensionSettings.ttotto, {
+                echoPreventionEnabled: basic, echoPreventionStrong: strong,
+            });
+            for (const type of ['normal', 'regenerate', 'swipe', '']) {
+                await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, type);
+                const prompt = promptCalls.at(-1)[1];
+                assert.equal(prompt.includes('<ttotto_anti_echo>'), basic || strong);
+                assert.equal(prompt.includes('MANDATORY TWO-PASS VALIDATION'), strong);
+                assert.equal((prompt.match(/<ttotto_anti_echo>/g) ?? []).length, basic || strong ? 1 : 0);
+            }
+            await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'continue');
+            assert.equal(promptCalls.at(-1)[1], '');
+        }
+    }
+    context.chatMetadata.ttotto.enabled = false;
+    await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    assert.equal(promptCalls.at(-1)[1], '');
+    context.chatMetadata.ttotto.enabled = true;
+
     assert.match(module.buildGenerationInjection('', { echoPreventionEnabled: true }, 'swipe', context.chat, []), /<ttotto_anti_echo>/);
     const strongPrompt = module.buildGenerationInjection('', {
         echoPreventionEnabled: true,

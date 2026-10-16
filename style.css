@@ -838,3 +838,73 @@
     box-sizing: border-box;
 }
 
+/* Native disclosure controls keep mobile settings compact and keyboard accessible. */
+#ttotto-settings .ttotto-settings-help {
+  display: block;
+  margin: 8px 0;
+  opacity: 0.72;
+  line-height: 1.4;
+}
+
+#ttotto-settings .ttotto-settings-group {
+  margin: 7px 0;
+  min-width: 0;
+  border: 1px solid var(--SmartThemeBorderColor, currentColor);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#ttotto-settings .ttotto-settings-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-settings-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+#ttotto-settings .ttotto-settings-group > summary::after {
+  content: '+';
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+#ttotto-settings .ttotto-settings-group[open] > summary::after {
+  content: '−';
+}
+
+#ttotto-settings .ttotto-settings-group > summary:focus-visible {
+  outline: 2px solid var(--SmartThemeQuoteColor, currentColor);
+  outline-offset: -3px;
+}
+
+#ttotto-settings .ttotto-group-status {
+  font-size: 0.8em;
+  font-weight: 400;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+#ttotto-settings .ttotto-settings-group-body {
+  padding: 0 10px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-settings-group:not([open]) > .ttotto-settings-group-body {
+  display: none;
+}
+
+#ttotto-settings .ttotto-settings-group-body > .ttotto-guard-settings {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
