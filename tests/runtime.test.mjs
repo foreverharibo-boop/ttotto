@@ -989,10 +989,10 @@ test('에코 방지는 반복 패턴이 없어도 생성 직전에 주입되고 
             assert.equal(promptCalls.at(-1)[1], '');
         }
     }
-    context.chatMetadata.ttotto.enabled = false;
+    context.extensionSettings.ttotto.allChatsEnabled = false;
     await globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
     assert.equal(promptCalls.at(-1)[1], '');
-    context.chatMetadata.ttotto.enabled = true;
+    context.extensionSettings.ttotto.allChatsEnabled = true;
 
     assert.match(module.buildGenerationInjection('', { echoPreventionEnabled: true }, 'swipe', context.chat, []), /<ttotto_anti_echo>/);
     const strongPrompt = module.buildGenerationInjection('', {
@@ -1388,4 +1388,56 @@ test('지난 채팅 기억은 제외 블록을 걷어낸 본문만 저장하고 
     assert.ok(longMessage.text.length > 9000, '저장 시 글자수를 자르면 안 됨');
     assert.doesNotMatch(longMessage.text, /…/);
     module.onDisable();
+});
+
+
+test('공통 스위치는 새 채팅과 기존 채팅 모두에 적용되고 저장한 OFF 및 확장 비활성화를 존중한다', async () => {
+    const calls = [];
+    const context = {
+        eventTypes: { APP_READY: 'app_ready' }, eventSource: { on() {}, removeListener() {} },
+        // Legacy master OFF was ignored by earlier releases and must not turn
+        // the new, default-ON global switch off during migration.
+        extensionSettings: { ttotto: { enabled: false, globalBans: ['anchor'], responseGuardEnabled: true } },
+        chatMetadata: {}, chatId: 'new-chat', characterId: 0, groupId: null,
+        name1: 'User', name2: 'Character', characters: [{ name: 'Character', avatar: 'global.png' }], groups: [],
+        chat: [{ is_user: true, mes: 'Hello.' }],
+        setExtensionPrompt(...args) { calls.push(args); }, saveSettingsDebounced() {}, saveMetadataDebounced() {},
+    };
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info() {}, success() {}, error() {} };
+    const module = await import(`../index.js?global-enable=${Date.now()}`);
+    const generate = () => globalThis.ttottoGenerationInterceptor(context.chat, 0, () => {}, 'normal');
+    await generate();
+    assert.equal(context.extensionSettings.ttotto.allChatsEnabled, true);
+    assert.match(calls.at(-1)[1], /BANNED: "anchor"/);
+    assert.ok(context.chatMetadata.ttotto, '첫 생성에서 새 채팅 상태를 준비한다');
+
+    context.chatId = 'legacy-off';
+    context.chatMetadata = { ttotto: { enabled: false, banOffenseVersion: 3 } };
+    await generate();
+    assert.match(calls.at(-1)[1], /BANNED: "anchor"/);
+
+    context.extensionSettings.ttotto.allChatsEnabled = false;
+    for (const id of ['legacy-off', 'another-chat']) {
+        context.chatId = id;
+        context.chatMetadata = { ttotto: { enabled: true, banOffenseVersion: 3 } };
+        // Simulate saving/loading JSON as well as repeated settings reads.
+        context.extensionSettings = JSON.parse(JSON.stringify(context.extensionSettings));
+        await generate();
+        assert.equal(calls.at(-1)[1], '');
+        assert.equal(context.extensionSettings.ttotto.allChatsEnabled, false);
+        assert.equal(module.createResponseGuardPlan({ messages: [{ role: 'user', content: 'Hello.' }] }, 'normal'), null);
+        assert.deepEqual(context.extensionSettings.ttotto.globalBans, ['anchor']);
+    }
+    context.extensionSettings.ttotto.allChatsEnabled = true;
+    await generate();
+    assert.match(calls.at(-1)[1], /BANNED: "anchor"/);
+    context.chatMetadata.ttotto.skipNextGeneration = true;
+    await generate();
+    assert.equal(calls.at(-1)[1], '');
+    await generate();
+    assert.match(calls.at(-1)[1], /BANNED: "anchor"/);
+    module.onDisable();
+    await generate();
+    assert.equal(calls.at(-1)[1], '');
 });

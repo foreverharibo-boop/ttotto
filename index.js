@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.25';
+} from './detector.js?v=1.13.26';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.25';
+const EXTENSION_VERSION = '1.13.26';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -55,6 +55,7 @@ const PROMPT_ORDER_LABELS = Object.freeze({
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
+    allChatsEnabled: true,
     windowSize: 20,
     sensitivity: 'normal',
     narrationEnabled: true,
@@ -428,11 +429,10 @@ function getSettings() {
         ...(current && typeof current === 'object' ? current : {}),
     };
     const settings = context.extensionSettings[MODULE_NAME];
-    // The extension itself is enabled/disabled by SillyTavern. The redundant
-    // master checkbox was removed from the drawer header, so migrate any old
-    // saved "off" value to active instead of leaving users stuck without a UI
-    // control that can turn it back on.
-    settings.enabled = true;
+    // One explicit global preference replaces the old per-chat switch.
+    // A new key defaults ON without reviving stale legacy master OFF values.
+    settings.allChatsEnabled = settings.allChatsEnabled !== false;
+    settings.enabled = settings.allChatsEnabled;
     settings.sourceMode = 'original';
     settings.characterUuids = settings.characterUuids && typeof settings.characterUuids === 'object'
         ? settings.characterUuids
@@ -555,7 +555,9 @@ function getChatState(create = true) {
     const state = metadata[CHAT_STATE_KEY];
     if (!state || typeof state !== 'object') return null;
     state.version = 5;
-    state.enabled ??= true;
+    // Compatibility for existing guards: derive activation from the global
+    // preference, never from an old chat-specific OFF value.
+    state.enabled = context.extensionSettings?.[MODULE_NAME]?.allChatsEnabled !== false;
     state.skipNextGeneration = Boolean(state.skipNextGeneration);
     state.lastBanHits = Array.isArray(state.lastBanHits) ? state.lastBanHits.slice(0, 20) : [];
     const savedOffenseVersion = Number(state.banOffenseVersion ?? 0);
@@ -1875,7 +1877,7 @@ globalThis.ttottoGenerationInterceptor = async function ttottoGenerationIntercep
     installPresetPromptCapture(presetPromptApi?.promptManager ?? getContext()?.promptManager);
     try {
         const settings = getSettings();
-        const state = getChatState(false);
+        const state = getChatState();
         if (!runtimeActive || !settings.enabled || !state?.enabled) return;
         observedGenerationType = generationType;
         skipCurrentGeneration = false;
@@ -1974,7 +1976,7 @@ function preparePendingGroupsFromCurrentChat(generationType = observedGeneration
     const type = String(generationType ?? '').trim().toLocaleLowerCase() || 'normal';
     if (!ALLOWED_GENERATION_TYPES.has(type)) return [];
     const settings = getSettings();
-    const state = getChatState(false);
+    const state = getChatState();
     if (!runtimeActive || !mainGenerationActive || !settings.enabled || !state?.enabled
         || state.skipNextGeneration || skipCurrentGeneration) return [];
     const analysis = analyzeCurrentChat(false, collectAssistantMessages());
@@ -2466,7 +2468,7 @@ async function requestSmartAnalysis(messages, signal) {
 async function runSmartAnalysis({ manual = false } = {}) {
     const settings = getSettings();
     const state = getChatState();
-    if (!runtimeActive || !state || smartRunning) return false;
+    if (!runtimeActive || !settings.enabled || !state?.enabled || smartRunning) return false;
     if (!settings.smartAnalysis) {
         if (manual) toastr.info('설정에서 AI 정밀 분석을 먼저 켜주세요.', '🌀또또');
         return false;
@@ -3212,8 +3214,7 @@ function updateUi(analysisOverride = null) {
     const enabled = settings.enabled && (state?.enabled ?? false);
     const analysis = analysisOverride ?? (enabled ? analyzeCurrentChat(false) : analysisCache ?? EMPTY_ANALYSIS);
 
-    document.getElementById('ttotto-chat-enabled').checked = state?.enabled ?? false;
-    document.getElementById('ttotto-chat-enabled').disabled = !state;
+    document.getElementById('ttotto-all-chats-enabled').checked = settings.allChatsEnabled;
     document.getElementById('ttotto-window-size').value = String(settings.windowSize);
     document.getElementById('ttotto-sensitivity').value = settings.sensitivity;
     document.getElementById('ttotto-narration-enabled').checked = settings.narrationEnabled;
@@ -3345,6 +3346,16 @@ function bindSetting(id, key, parser = (value) => value) {
         const value = element.type === 'checkbox' ? element.checked : element.value;
         const settings = getSettings();
         settings[key] = parser(value);
+        if (key === 'allChatsEnabled') {
+            settings.enabled = settings.allChatsEnabled;
+            clearTimeout(analysisTimer);
+            clearTimeout(smartTimer);
+            smartForcePending = false;
+            forceSmartOnNextAnalysis = false;
+            smartAbortController?.abort();
+            clearInjectedPrompt();
+            syncDragBanHandlers(settings);
+        }
         if (key.startsWith('responseGuard')) abortResponseGuards();
         saveSettings();
         if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
@@ -3565,15 +3576,7 @@ function bindUi() {
         }
     });
 
-    document.getElementById('ttotto-chat-enabled').addEventListener('change', (event) => {
-        const state = getChatState();
-        if (!state) return;
-        state.enabled = event.target.checked;
-        saveChatState();
-        invalidateAnalysis();
-        if (!state.enabled) clearInjectedPrompt();
-        updateUi();
-    });
+    bindSetting('ttotto-all-chats-enabled', 'allChatsEnabled', Boolean);
 
     document.getElementById('ttotto-toggle-preview').addEventListener('click', (event) => {
         const preview = document.getElementById('ttotto-prompt-preview');
