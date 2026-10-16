@@ -857,7 +857,9 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
         lines.push('Dialogue:');
         dialogue.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
-    lines.push('Do not force a replacement gesture or line merely to demonstrate variety; omit filler reactions when no natural alternative is needed.');
+    lines.push(exclusionInfo?.banPreserveLength
+        ? 'Keep all bans and avoidance rules above in force. When revising prohibited or repetitive wording, preserve the scene-relevant emotional and informational substance through fresh, natural phrasing and sentence construction. Maintain the requested response length and level of detail without padding, repetition, invented plot events, or forced replacement gestures. Bans take priority over length.'
+        : 'Do not force a replacement gesture or line merely to demonstrate variety; omit filler reactions when no natural alternative is needed.');
     lines.push('</ttotto_anti_repetition>');
     return lines.join('\n');
 }

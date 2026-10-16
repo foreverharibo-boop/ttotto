@@ -1220,6 +1220,21 @@ test('영구 금지어와 1회 쉬기, UUID별 지난 채팅 기억이 함께 �
     assert.match(promptCalls.at(-1)[1], /Do not begin a sentence with "He stared at her"/);
     assert.match(promptCalls.at(-1)[1], /STRICT PERMANENT-BAN MODE/);
 
+    // Switching only the saved setting must refresh the cached injection even
+    // when the conversation text is unchanged, and OFF restores the baseline.
+    assert.equal(context.extensionSettings.ttotto.banPreserveLength, false);
+    const baselinePrompt = promptCalls.at(-1)[1];
+    assert.match(baselinePrompt, /omit filler reactions/);
+    context.extensionSettings.ttotto.banPreserveLength = true;
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.match(promptCalls.at(-1)[1], /Maintain the requested response length/);
+    assert.doesNotMatch(promptCalls.at(-1)[1], /omit filler reactions/);
+    assert.match(promptCalls.at(-1)[1], /STRICT PERMANENT-BAN MODE/);
+    assert.match(promptCalls.at(-1)[1], /jaw muscles/);
+    context.extensionSettings.ttotto.banPreserveLength = false;
+    await globalThis.ttottoGenerationInterceptor([], 0, () => {}, 'normal');
+    assert.equal(promptCalls.at(-1)[1], baselinePrompt);
+
     context.chatId = 'chat-b';
     context.chatMetadata = { ttotto: { enabled: true, smart: { patterns: [], messageKeys: [] } } };
     context.chat = [{ mes: 'He entered a newly opened room in silence.', name: 'Same Name', send_date: '2026-01-02', original_avatar: 'same-card.png' }];

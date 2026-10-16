@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js';
+} from './detector.js?v=1.13.22';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.21';
+const EXTENSION_VERSION = '1.13.22';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -62,6 +62,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     echoPreventionEnabled: true,
     echoPreventionStrong: false,
     banPreventionStrong: false,
+    banPreserveLength: false,
     responseGuardEnabled: false,
     responseGuardBan: true,
     responseGuardEcho: true,
@@ -490,6 +491,7 @@ function getSettings() {
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
+    settings.banPreserveLength = Boolean(settings.banPreserveLength);
     settings.responseGuardEnabled = Boolean(settings.responseGuardEnabled);
     settings.responseGuardBan = settings.responseGuardBan !== false;
     settings.responseGuardEcho = settings.responseGuardEcho !== false;
@@ -1619,6 +1621,7 @@ function analysisDependencyFingerprint(settings, state) {
         narrationEnabled: settings.narrationEnabled,
         dialogueEnabled: settings.dialogueEnabled,
         banPreventionStrong: settings.banPreventionStrong,
+        banPreserveLength: settings.banPreserveLength,
         smartAnalysis: settings.smartAnalysis,
         maxInjectedPatterns: settings.maxInjectedPatterns,
         crossChatMemoryEnabled: settings.crossChatMemoryEnabled,
@@ -1693,6 +1696,7 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
         {
             excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
             banPreventionStrong: settings.banPreventionStrong,
+            banPreserveLength: settings.banPreserveLength,
         },
     );
 
@@ -3217,6 +3221,8 @@ function updateUi(analysisOverride = null) {
     }
     const strongBanCheckbox = document.getElementById('ttotto-ban-prevention-strong');
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
+    const preserveLengthCheckbox = document.getElementById('ttotto-ban-preserve-length');
+    if (preserveLengthCheckbox) preserveLengthCheckbox.checked = Boolean(settings.banPreserveLength);
     for (const [id, key] of [['ttotto-response-guard-enabled', 'responseGuardEnabled'],
         ['ttotto-response-guard-ban', 'responseGuardBan'], ['ttotto-response-guard-echo', 'responseGuardEcho']]) {
         const element = document.getElementById(id);
@@ -3375,6 +3381,7 @@ function bindUi() {
     bindSetting('ttotto-echo-prevention-enabled', 'echoPreventionEnabled', Boolean);
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
+    bindSetting('ttotto-ban-preserve-length', 'banPreserveLength', Boolean);
     bindSetting('ttotto-response-guard-enabled', 'responseGuardEnabled', Boolean);
     bindSetting('ttotto-response-guard-ban', 'responseGuardBan', Boolean);
     bindSetting('ttotto-response-guard-echo', 'responseGuardEcho', Boolean);

@@ -286,6 +286,32 @@ test('금지어들 강화 모드는 금지어와 구조 모두에 답변 무효�
     assert.match(strongPrompt, /Do not begin a sentence with "He stared at her"/);
 });
 
+test('분량 유지 옵션은 기본 문구 한 줄만 교체하고 끄면 정확히 복원한다', () => {
+    const patterns = [
+        { source: 'pinned', kind: 'permanent-term', scope: 'narration', example: '사내', instruction: 'Never use 사내.', escalated: 2 },
+        { source: 'pinned', kind: 'permanent-pattern', scope: 'narration', instruction: 'Avoid repeated sentence openings.' },
+        { source: 'local', scope: 'dialogue', instruction: 'Avoid repeating the same reply.' },
+    ];
+    for (const banPreventionStrong of [false, true]) {
+        const baseline = buildInjection(patterns, 6, { banPreventionStrong });
+        const enabled = buildInjection(patterns, 6, { banPreventionStrong, banPreserveLength: true });
+        const disabled = buildInjection(patterns, 6, { banPreventionStrong, banPreserveLength: false });
+        assert.equal(disabled, baseline);
+        assert.match(baseline, /omit filler reactions when no natural alternative is needed/);
+        assert.doesNotMatch(enabled, /omit filler reactions/);
+        const before = baseline.split('\n');
+        const after = enabled.split('\n');
+        assert.equal(after.length, before.length);
+        const changed = after.filter((line, i) => line !== before[i]);
+        assert.equal(changed.length, 1);
+        assert.match(changed[0], /Maintain the requested response length and level of detail/);
+        assert.match(changed[0], /Bans take priority over length/);
+        assert.equal(before.at(-1), '</ttotto_anti_repetition>');
+        assert.equal(after.at(-1), before.at(-1));
+    }
+    assert.equal(buildInjection([], 6, { banPreserveLength: true }), '');
+});
+
 test('구조 금지만 등록돼 있어도 강화 모드가 작동하고 30개를 넘어 전부 주입한다', () => {
     const structures = Array.from({ length: 42 }, (_, index) => ({
         source: 'pinned',
