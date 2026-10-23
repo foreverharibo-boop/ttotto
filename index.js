@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.27';
+} from './detector.js?v=1.13.28';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -17,7 +17,7 @@ import {
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
 import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.21';
-import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.21';
+import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.28';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +31,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.27';
+const EXTENSION_VERSION = '1.13.28';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -2266,6 +2266,7 @@ export function createResponseGuardPlan(body, type = observedGenerationType) {
         minConfidence: settings.responseGuardMinConfidence,
         generationType: type,
         chatIdentity: getChatIdentity(),
+        chatFile: context.chatId, characterAvatar: activeCharacter?.avatar,
     };
 }
 
@@ -2289,7 +2290,7 @@ function setPendingGuardReport(stage, onlyPending = false) {
     renderResponseGuardReport(owner.responseGuardReport);
 }
 
-async function guardMainResponse(url, options, rest, body, plan, originalFetch) {
+async function guardMainResponse(url, options, rest, body, plan, originalFetch, resume = null) {
     // Unsupported review formats still use the original generation path. Do
     // not open review/notification sessions or consume Relay's native ticket.
     const skipReason = responseGuardSkipReason(body);
@@ -2303,8 +2304,8 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
     }
     // One native reply, including its actual rewrites. JEV/helper calls below
     // deliberately stay outside this session and do not occupy relay slots.
-    const relay = globalThis.sillyRelayReplies?.apiVersion === 1
-        ? globalThis.sillyRelayReplies.begin() : null;
+    const relay = resume?.session || (globalThis.sillyRelayReplies?.apiVersion === 1
+        ? globalThis.sillyRelayReplies.begin({ owner: 'ttotto', checkpoint: { plan, attempt: 0 } }) : null);
     const controller = new AbortController();
     const requestSignal = options?.signal ?? (typeof Request !== 'undefined' && url instanceof Request ? url.signal : null);
     const abort = () => controller.abort();
@@ -2332,6 +2333,8 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
         checkContext();
         const response = await runResponseGuard({
             body, plan, signal: controller.signal,
+            initialResponse: resume?.response || null,
+            startAttempt: resume?.attempt || 0,
             send: async (next, signal) => {
                 checkContext();
                 let init = { ...options, [RESPONSE_GUARD_REQUEST]: true,
@@ -2347,7 +2350,11 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
             },
             clean: stripBanCounterText,
             exactMatch: containsExactBanTerm,
-            onStatus: (patch) => { checkContext(); update(patch); },
+            onStatus: (patch) => {
+                checkContext();
+                relay?.checkpoint?.({ plan, attempt: patch.attempt ?? report.attempt });
+                update(patch);
+            },
         });
         checkContext();
         relay?.complete(response);
@@ -2367,6 +2374,31 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch) 
         requestSignal?.removeEventListener('abort', abort);
     }
 }
+
+// The snapshot contains rules and the original generation payload, never the
+// JEV key. Reloads use the retained response as the first candidate; only an
+// actual violation can request another rewrite.
+globalThis.sillyRelayReviewers ||= Object.create(null);
+globalThis.sillyRelayReviewers.ttotto = {
+    async resume({ body, checkpoint, response, session }) {
+        let plan = checkpoint?.plan;
+        const ctx = getContext();
+        if (!plan || plan.chatFile !== ctx.chatId
+            || plan.characterAvatar !== ctx.characters?.[ctx.characterId]?.avatar) throw new GuardError('원래 채팅의 또또 검수 정보를 확인하지 못했어요.');
+        plan = { ...plan, chatIdentity: getChatIdentity() };
+        if (!Number.isInteger(checkpoint.attempt) || checkpoint.attempt < 0 || checkpoint.attempt > plan.maxRewrites) {
+            throw new GuardError('또또 검수 재작성 횟수를 확인하지 못했어요.');
+        }
+        // A previous translation ticket describes the retained candidate only.
+        // A real rewrite is translated from its new final source on receive.
+        body = structuredClone(body);
+        delete body.__verba_server_ticket;
+        const upstream = globalThis.fetch.bind(globalThis);
+        return guardMainResponse('/api/backends/chat-completions/generate', {
+            method: 'POST', headers: getContext().getRequestHeaders?.(),
+        }, [], body, plan, upstream, { session, response, attempt: checkpoint.attempt });
+    },
+};
 
 function buildSmartInput(messages) {
     const settings = getSettings();

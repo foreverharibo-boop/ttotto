@@ -700,6 +700,34 @@ test('relay session contains the draft and actual rewrites only, and selects the
     }
 });
 
+for (const [text, attempt, expectedSends] of [
+    ['He opened the door.', 0, 0],
+    ['His jaw tightened.', 0, 1],
+    ['His jaw tightened.', 1, 0],
+]) test(`resumed review uses retained candidate at attempt ${attempt}, with ${expectedSends} rewrites`, async () => {
+    const env = await setup({ globalStructureBans: [] });
+    let sends = 0, selected;
+    try {
+        const plan = env.module.createResponseGuardPlan(env.body);
+        const session = {
+            checkpoint(value) { assert.ok(value.attempt <= plan.maxRewrites); },
+            async fetch(input, init) {
+                sends++; assert.equal(JSON.parse(init.body).model, 'original-main');
+                const response = nativeReply('He opened the door.'); response.headers.set('x-silly-relay-job', 'b'.repeat(32));
+                return response;
+            },
+            complete(response) { selected = response.headers.get('x-silly-relay-job'); },
+            cancel() { assert.fail('a retained readable response must not be discarded'); },
+        };
+        const response = nativeReply(text); response.headers.set('x-silly-relay-job', 'a'.repeat(32));
+        const result = await globalThis.sillyRelayReviewers.ttotto.resume({ body: env.body,
+            checkpoint: { plan, attempt }, response, session });
+        assert.equal((await result.json()).choices[0].message.content, expectedSends ? 'He opened the door.' : text);
+        assert.equal(sends, expectedSends); assert.equal(env.sent.length, 0, 'never regenerate the original reply');
+        assert.equal(selected, (expectedSends ? 'b' : 'a').repeat(32));
+    } finally { env.cleanup(); }
+});
+
 test('user stop cancels the logical relay reply instead of completing its earlier draft', async () => {
     let started;
     const ready = new Promise(resolve => { started = resolve; });

@@ -340,7 +340,8 @@ function boundedReviewJudge(judge, parentSignal, budgetMs = MAX_REVIEW_WAIT_MS) 
     };
 }
 
-export async function runResponseGuard({ body, plan, signal, send, judge, clean, exactMatch, onStatus = () => {} }) {
+export async function runResponseGuard({ body, plan, signal, send, judge, clean, exactMatch,
+    initialResponse = null, startAttempt = 0, onStatus = () => {} }) {
     checkAbort(signal);
     const skipReason = responseGuardSkipReason(body);
     if (skipReason) {
@@ -354,11 +355,11 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
     let latestReply;
     let activeAttempt = 0;
     try {
-        for (let attempt = 0; attempt <= plan.maxRewrites; attempt++) {
+        for (let attempt = startAttempt; attempt <= plan.maxRewrites; attempt++) {
             activeAttempt = attempt;
             checkAbort(signal);
             onStatus({ stage: attempt ? '답변 수정 중' : '답변 작성 중', attempt });
-            const response = await send(next, signal);
+            const response = attempt === startAttempt && initialResponse ? initialResponse : await send(next, signal);
             checkAbort(signal);
             if (!response.ok) {
                 if (!latestReply) {
