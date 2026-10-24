@@ -203,14 +203,14 @@
               <summary>표현 반복 검사에서 제외할 구간</summary>
               <small>체크한 구간 안에서는 같은 표현을 반복해도 감지하지 않아요. 금지어·직접 등록한 금지 구조·에코 방지에는 적용되지 않아요.</small>
               <div id="ttotto-repetition-formats"></div>
-              <small>기존 동작대로 코드블록만 기본 제외예요. 시작·끝 기호가 모두 있는 구간에 적용하며, 인용·제목은 해당 줄만 제외해요.</small>
+              <small>기본 선택은 없어요. 제외할 구간만 직접 체크해 주세요. 시작·끝 기호가 모두 있는 구간에 적용하며, 인용·제목은 해당 줄만 제외해요.</small>
               <strong>직접 추가</strong>
               <div id="ttotto-repetition-custom"></div>
               <div class="ttotto-exclusion-compose">
                 <label class="ttotto-stack-field" for="ttotto-exclusion-start"><span>시작 기호</span><input id="ttotto-exclusion-start" class="text_pole" type="text" maxlength="80" placeholder="예: 【"></label>
                 <label class="ttotto-stack-field" for="ttotto-exclusion-end"><span>끝 기호</span><input id="ttotto-exclusion-end" class="text_pole" type="text" maxlength="80" placeholder="예: 】"></label>
+                <button id="ttotto-exclusion-add" class="menu_button" type="button">구간 추가</button>
               </div>
-              <button id="ttotto-exclusion-add" class="menu_button" type="button">구간 추가</button>
               <small>정규식이 아니라 입력한 기호 그대로 찾아요. 기호별 최대 80자, 최대 30개를 저장할 수 있어요.</small>
             </details>
 

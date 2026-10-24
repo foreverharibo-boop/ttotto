@@ -1,6 +1,6 @@
 import { checkAbort } from './jev-client.js?v=1.13.18';
 import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.18';
-import { excludeRepetitionRegions } from './repetition-exclusions.js?v=1.13.29';
+import { excludeRepetitionRegions } from './repetition-exclusions.js?v=1.13.30';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }

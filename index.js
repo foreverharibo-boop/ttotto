@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.29';
+} from './detector.js?v=1.13.30';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -17,11 +17,11 @@ import {
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
 import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.21';
-import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.29';
+import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.30';
 import {
     REPETITION_FORMATS, MAX_CUSTOM_EXCLUSIONS, MAX_DELIMITER_LENGTH,
     normalizeRepetitionExclusions, repetitionExclusionKey, repetitionScopeInstruction,
-} from './repetition-exclusions.js?v=1.13.29';
+} from './repetition-exclusions.js?v=1.13.30';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -35,7 +35,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.29';
+const EXTENSION_VERSION = '1.13.30';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -97,7 +97,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     excludeAllTaggedBlocks: true,
     excludedTags: '',
     excludedClasses: '',
-    repetitionExclusions: { formats: ['codeBlock'], custom: [] },
+    repetitionExclusions: { formats: [], custom: [] },
 });
 const EMPTY_ANALYSIS = Object.freeze({
     fingerprint: '', messageFingerprint: '', messages: [], localPatterns: [], smartPatterns: [],
@@ -495,6 +495,13 @@ function getSettings() {
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
     settings.repetitionExclusions = normalizeRepetitionExclusions(settings.repetitionExclusions);
+    if (current?.repetitionExclusionDefaultsVersion !== 2) {
+        // Remove the previous untouched default once; preserve customized lists.
+        const config = settings.repetitionExclusions;
+        if (config.formats.length === 1 && config.formats[0] === 'codeBlock' && !config.custom.length) config.formats = [];
+        settings.repetitionExclusionDefaultsVersion = 2;
+        context.saveSettingsDebounced?.();
+    }
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     settings.banPreserveLength = Boolean(settings.banPreserveLength);
@@ -1604,7 +1611,7 @@ function getContextNames() {
 function smartPatternsForMessages(state, messages) {
     const settings = getSettings();
     if (!settings.smartAnalysis || state?.smart?.stale || !state?.smart?.patterns?.length) return [];
-    if ((state.smart.repetitionExclusionKey ?? repetitionExclusionKey()) !== repetitionExclusionKey(settings.repetitionExclusions)) return [];
+    if ((state.smart.repetitionExclusionKey ?? repetitionExclusionKey({ formats: ['codeBlock'] })) !== repetitionExclusionKey(settings.repetitionExclusions)) return [];
     const savedKeys = state.smart.messageKeys ?? [];
     if (!savedKeys.length) return [];
     const current = new Set(messages.map((message) => message.key));

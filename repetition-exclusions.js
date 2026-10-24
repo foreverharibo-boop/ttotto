@@ -18,8 +18,7 @@ export const MAX_CUSTOM_EXCLUSIONS = 30;
 export const MAX_DELIMITER_LENGTH = 80;
 
 export function normalizeRepetitionExclusions(value) {
-    // Code fences were already excluded before this setting existed.
-    const formats = Array.isArray(value?.formats) ? value.formats : ['codeBlock'];
+    const formats = Array.isArray(value?.formats) ? value.formats : [];
     const custom = [];
     for (const item of Array.isArray(value?.custom) ? value.custom : []) {
         if (typeof item?.start !== 'string' || typeof item?.end !== 'string'

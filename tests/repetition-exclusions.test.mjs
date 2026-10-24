@@ -13,6 +13,13 @@ const messages = ['as he looked away.', 'when the door shut.', 'at the sound of 
     id: `M${i}`, key: `M${i}`, characterUuid: 'uuid-peter', speaker: 'Peter', text: `*His jaw tightened ${suffix}*`,
 }));
 
+test('new defaults analyze code contents until the user explicitly selects code exclusion', () => {
+    assert.deepEqual(normalizeRepetitionExclusions(), config());
+    const text = '```\nHis jaw tightened.\n```';
+    assert.match(splitDialogueAndNarration(text).narration.join(' '), /jaw tightened/);
+    assert.deepEqual(splitDialogueAndNarration(text, { repetitionExclusions: config('codeBlock') }), { dialogue: [], narration: [] });
+});
+
 test('single, double and triple asterisks remain independent, with escapes and incomplete pairs preserved', () => {
     const text = '*italic* **bold** ***both*** \\*literal\\* *unclosed';
     const filtered = excludeRepetitionRegions(text, config('italic'));
@@ -162,6 +169,19 @@ test('real runtime invalidates local analysis and preserves formatted cross-chat
         assert.equal(module.createResponseGuardPlan(body).rules.some(x => x.repetition), false);
         context.extensionSettings.ttotto.repetitionExclusions = config();
         assert.ok(module.createResponseGuardPlan(body).rules.some(x => x.repetition));
+        // Only the old untouched default is cleared once. A later explicit
+        // code-block selection and customized old lists survive normalization.
+        delete context.extensionSettings.ttotto.repetitionExclusionDefaultsVersion;
+        context.extensionSettings.ttotto.repetitionExclusions = config('codeBlock');
+        module.collectAssistantMessages();
+        assert.deepEqual(context.extensionSettings.ttotto.repetitionExclusions, config());
+        context.extensionSettings.ttotto.repetitionExclusions = config('codeBlock');
+        module.collectAssistantMessages();
+        assert.deepEqual(context.extensionSettings.ttotto.repetitionExclusions, config('codeBlock'));
+        delete context.extensionSettings.ttotto.repetitionExclusionDefaultsVersion;
+        context.extensionSettings.ttotto.repetitionExclusions = config('codeBlock', 'italic');
+        module.collectAssistantMessages();
+        assert.deepEqual(context.extensionSettings.ttotto.repetitionExclusions, config('codeBlock', 'italic'));
     } finally {
         if (previous === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = previous;
     }

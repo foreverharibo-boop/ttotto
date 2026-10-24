@@ -1,4 +1,4 @@
-import { codeRanges, excludeRepetitionRegions, repetitionScopeInstruction } from './repetition-exclusions.js?v=1.13.29';
+import { codeRanges, excludeRepetitionRegions, repetitionScopeInstruction } from './repetition-exclusions.js?v=1.13.30';
 
 const MAX_MESSAGE_CHARS = 8000;
 const MAX_SENTENCE_CHARS = 700;

@@ -918,8 +918,25 @@
 
 #ttotto-settings .ttotto-exclusion-compose {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content;
+  align-items: end;
+  gap: 6px;
+}
+
+#ttotto-settings .ttotto-exclusion-compose > label {
+  min-width: 0;
+  margin: 0;
+}
+
+#ttotto-settings #ttotto-exclusion-add {
+  width: auto !important;
+  min-width: max-content !important;
+  margin: 0 0 2px;
+  padding: 6px 8px;
+  white-space: nowrap !important;
+  word-break: keep-all;
+  writing-mode: horizontal-tb !important;
+  font-size: 0.85em;
 }
 
 #ttotto-settings .ttotto-exclusion-compose .text_pole {
