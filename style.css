@@ -905,6 +905,46 @@
 }
 
 /* The extension drawer opens directly to settings; chat popup retains navigation. */
+#ttotto-settings .ttotto-repetition-exclusions > summary {
+  cursor: pointer;
+  min-height: 36px;
+  padding: 6px 0;
+}
+
+#ttotto-settings .ttotto-repetition-exclusions > small {
+  display: block;
+  margin: 6px 0;
+}
+
+#ttotto-settings .ttotto-exclusion-compose {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#ttotto-settings .ttotto-exclusion-compose .text_pole {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#ttotto-settings .ttotto-custom-exclusion-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#ttotto-settings .ttotto-custom-exclusion-row > label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#ttotto-settings .ttotto-custom-exclusion-row > button {
+  flex: 0 0 auto;
+}
+
 #ttotto-settings:not(.ttotto-in-popup) .ttotto-tabs,
 #ttotto-settings:not(.ttotto-in-popup) #ttotto-panel-patterns {
   display: none !important;

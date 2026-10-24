@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { fingerprintMessages } from '../detector.js';
+import { repetitionExclusionKey } from '../repetition-exclusions.js';
 
 // Execute the production async function and reset handler with a deferred
 // provider, including providers that ignore AbortSignal.
@@ -21,7 +22,7 @@ function fixture() {
         AbortController, console: { error() {} }, LOG_PREFIX: 'test',
         getSettings: () => settings, getContext: () => ctx, getChatState: () => ctx.chatMetadata.ttotto,
         collectAssistantMessages: () => structuredClone(messages), countAssistantMessages: () => messages.length,
-        getChatIdentity: () => 'chat-A', updateUi() {}, fingerprintMessages,
+        getChatIdentity: () => 'chat-A', updateUi() {}, fingerprintMessages, repetitionExclusionKey,
         requestSmartAnalysis: () => new Promise((a, b) => { resolve = a; reject = b; }),
         parseSmartResponse: () => [{ label: 'accepted analysis' }], saveChatState: () => { saves++; },
         invalidateAnalysis() {}, analyzeCurrentChat() {}, confirmAction: async () => true,
@@ -33,7 +34,7 @@ function fixture() {
         finish: () => resolve('old result'), fail: () => reject(Error('late provider error')),
         reset: () => resetHandler(), saves: () => saves };
 }
-for (const change of ['reset', 'body', 'cancel', 'metadata', 'disabled', 'stale']) {
+for (const change of ['reset', 'body', 'cancel', 'metadata', 'disabled', 'stale', 'format setting']) {
     test(`late smart analysis is discarded after ${change}`, async () => {
         const f = fixture(), pending = f.run();
         if (change === 'reset') await f.reset();
@@ -42,6 +43,7 @@ for (const change of ['reset', 'body', 'cancel', 'metadata', 'disabled', 'stale'
         if (change === 'metadata') f.ctx.chatMetadata = { ttotto: { ...f.state } };
         if (change === 'disabled') f.settings.smartAnalysis = false;
         if (change === 'stale') f.scope.markSmartResultsStale();
+        if (change === 'format setting') f.settings.repetitionExclusions = { formats: ['italic'], custom: [] };
         const before = f.saves(); f.finish();
         assert.equal(await pending, false);
         assert.equal(f.state.smart.patterns.length, 0);

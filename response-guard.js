@@ -1,5 +1,6 @@
 import { checkAbort } from './jev-client.js?v=1.13.18';
 import { createRepairDocument, currentRepairUnits, exactRepairTargets, buildWholeRewriteBody } from './rewrite-targets.js?v=1.13.18';
+import { excludeRepetitionRegions } from './repetition-exclusions.js?v=1.13.29';
 
 export class GuardError extends Error {
     constructor(message) { super(message); this.name = 'TtottoGuardError'; }
@@ -173,6 +174,20 @@ export function buildGuardQuestions(plan, candidate) {
     return { state, questions, mapping };
 }
 
+export function buildReviewBatches(plan, candidate, clean) {
+    const ordinary = plan.rules.filter(rule => !rule.repetition);
+    const repetition = plan.rules.filter(rule => rule.repetition);
+    const batches = [];
+    if (ordinary.length || plan.echo) {
+        batches.push(buildGuardQuestions({ ...plan, rules: ordinary }, clean(candidate)));
+    }
+    if (repetition.length) {
+        const prose = clean(excludeRepetitionRegions(candidate, plan.repetitionExclusions));
+        if (prose.trim()) batches.push(buildGuardQuestions({ ...plan, rules: repetition, terms: [], echo: false }, prose));
+    }
+    return batches;
+}
+
 export function readGuardVerdict(result, questions, mapping, minConfidence = 0.7, deferred = []) {
     const issues = [];
     for (const id of Object.keys(questions)) {
@@ -204,7 +219,22 @@ function readLocationAnswer(answer, minConfidence) {
         && answer.confidence >= Math.max(STRUCTURE_VIOLATION_MIN_CONFIDENCE, minConfidence);
 }
 
-export async function locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal, deferred = []) {
+export async function locateRepairTargets(document, issues, plan, clean, exactMatch, judge, signal, deferred = [], scoped = false) {
+    if (!scoped && issues.some(issue => issue.repetition)) {
+        const targets = new Map();
+        const masked = excludeRepetitionRegions(document.original, plan.repetitionExclusions);
+        const repetitionDocument = { original: masked, units: document.units.map(unit => ({
+            ...unit, text: masked.slice(unit.start, unit.end),
+        })) };
+        for (const repetition of [false, true]) {
+            const selected = issues.filter(issue => Boolean(issue.repetition) === repetition);
+            if (!selected.length) continue;
+            const group = await locateRepairTargets(repetition ? repetitionDocument : document,
+                selected, plan, clean, exactMatch, judge, signal, deferred, true);
+            for (const [id, rules] of group) targets.set(id, [...(targets.get(id) ?? []), ...rules]);
+        }
+        return targets;
+    }
     const units = currentRepairUnits(document, clean).filter(x => x.prose.trim());
     const targets = new Map();
     if (!units.length) { deferred.push(...issues); return targets; }
@@ -395,15 +425,17 @@ export async function runResponseGuard({ body, plan, signal, send, judge, clean,
             let issues = plan.terms.filter(rule => exactMatch(prose, rule.term));
             if (!issues.length) {
                 try {
-                    const { state, questions, mapping } = buildGuardQuestions(plan, prose);
-                    if (Object.keys(questions).length) {
+                    for (const { state, questions, mapping } of buildReviewBatches(plan, candidate, clean)) {
+                        if (!Object.keys(questions).length) continue;
                         onStatus({ stage: 'Jev 검수 중', attempt });
                         const result = await reviewJudge(state, questions);
                         checkAbort(signal);
-                        issues = readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred);
+                        issues.push(...readGuardVerdict(result, questions, mapping, plan.minConfidence, deferred));
                     }
                 } catch (error) {
-                    return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
+                    // A later, independent review batch failing must not erase
+                    // an already confirmed violation from the first batch.
+                    if (!issues.length) return replayAfterReviewFailure(error, response, bytes, attempt, onStatus, signal);
                 }
             }
             checkAbort(signal);

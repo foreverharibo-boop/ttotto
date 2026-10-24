@@ -1,3 +1,5 @@
+import { codeRanges, excludeRepetitionRegions, repetitionScopeInstruction } from './repetition-exclusions.js?v=1.13.29';
+
 const MAX_MESSAGE_CHARS = 8000;
 const MAX_SENTENCE_CHARS = 700;
 const MAX_LOCAL_PATTERNS = 24;
@@ -202,8 +204,19 @@ function parseExclusionList(value, kind) {
         .map((item) => item.toLocaleLowerCase()))].slice(0, 30);
 }
 
-export function stripNonProse(text, exclusions = {}, { clip = true } = {}) {
-    let clean = String(text ?? '')
+export function stripNonProse(text, exclusions = {}, { clip = true, preserveCode = false } = {}) {
+    let source = String(text ?? '');
+    const codes = [];
+    let marker = '\uE000TTOTTO_CODE_';
+    while (source.includes(marker)) marker += '_';
+    if (preserveCode) {
+        for (const range of codeRanges(source).reverse()) {
+            const token = `${marker}${codes.length}\uE001`;
+            codes.push(source.slice(range.start, range.end));
+            source = source.slice(0, range.start) + token + source.slice(range.end);
+        }
+    }
+    let clean = source
         // Model-internal reasoning is never roleplay prose. Always remove the
         // known thought-tag families, even when generic tag exclusion is off.
         // An unclosed reasoning tag is treated as extending to the end.
@@ -227,18 +240,20 @@ export function stripNonProse(text, exclusions = {}, { clip = true } = {}) {
     clean = stripGenerationMetaLines(clean);
     // Analysis clips long texts for local n-gram performance; storage callers
     // can opt out to keep the full stripped prose.
-    if (clip) clean = clipMessage(clean);
-
-    return clean
+    clean = clean
         .replace(/```[\s\S]*?```/g, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\[(?:img|image|video|audio|file):[^\]]*]/gi, ' ')
         .replace(/\r/g, '')
         .trim();
+    if (preserveCode) {
+        codes.forEach((code, i) => { clean = clean.replace(`${marker}${i}\uE001`, () => code); });
+    }
+    return clip ? clipMessage(clean) : clean;
 }
 
 export function splitDialogueAndNarration(text, exclusions = {}) {
-    const clean = stripNonProse(text, exclusions);
+    const clean = stripNonProse(excludeRepetitionRegions(text, exclusions.repetitionExclusions), exclusions, { preserveCode: true });
     const dialogue = [];
     const narration = [];
     const regex = /"([^"\n]{2,})"|“([^”\n]{2,})”|‘([^’\n]{2,})’|「([^」\n]{2,})」|『([^』\n]{2,})』/g;
@@ -833,7 +848,7 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     }
 
     if (compactTerms.length) {
-        lines.push('Permanent banned expressions — global and character-specific; apply to all dialogue and narration:');
+        lines.push('Permanent banned expressions — global and character-specific; apply to all dialogue and narration, including formatted text, inner thoughts, quotations and code:');
         lines.push('Never output, quote, refer to, or discuss any expression in the list below. Match case-insensitively and also avoid trivial capitalization, spacing, punctuation, hyphenation, or inflection variants and close paraphrases that name the same concept.');
         const escalated = compactTerms.filter((item) => item.escalated > 0);
         if (escalated.length) {
@@ -849,6 +864,10 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
         permanentStructures.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
 
+    if (detected.length) {
+        const scopeInstruction = repetitionScopeInstruction(exclusionInfo.repetitionExclusions);
+        if (scopeInstruction) lines.push(scopeInstruction);
+    }
     if (narration.length) {
         lines.push('Narration:');
         narration.forEach((pattern) => lines.push(`- ${pattern.instruction}`));

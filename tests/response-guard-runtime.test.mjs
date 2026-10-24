@@ -32,6 +32,34 @@ test('failed main rewrite returns the retained reply through the installed fetch
 
 let serial = 0;
 
+for (const [name, wrap] of [
+    ['italic', x => `*${x}*`], ['bold', x => `**${x}**`], ['boldItalic', x => `***${x}***`],
+    ['underline', x => `__${x}__`], ['strike', x => `~~${x}~~`],
+    ['inlineCode', x => '`' + x + '`'], ['codeBlock', x => '```text\n' + x + '\n```'],
+    ['quote', x => '> ' + x], ['heading', x => '# ' + x],
+    ['link', x => `[${x}](https://example.test)`], ['image', x => `![${x}](example.png)`],
+    ['custom', x => `【${x}】`],
+]) {
+    test(`ban inside repetition-excluded ${name} still triggers an actual rewrite without Jev`, async () => {
+        let calls = 0;
+        const draft = wrap('사내새끼가');
+        const env = await setup({ globalBans: ['사내'], globalStructureBans: [], repetitionExclusions: {
+            formats: [name], custom: [{ start: '【', end: '】', enabled: true }],
+        } }, body => {
+            assert.notEqual(body.model, 'jev-latest');
+            if (++calls === 1) return nativeReply(draft);
+            assert.match(body.messages.at(-1).content, /MINIMAL REVISION/);
+            return nativeReply('그가 문을 열었다.');
+        });
+        try {
+            assert.equal(env.module.containsExactBanTerm(env.module.stripBanCounterText(draft), '사내'), true);
+            assert.equal((await (await env.send()).json()).choices[0].message.content, '그가 문을 열었다.');
+            assert.equal(calls, 2);
+            assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.attempt, 1);
+        } finally { env.cleanup(); }
+    });
+}
+
 test('사내 ban neither judges nor rewrites unrelated 사내방송 compound', async () => {
     const draft = '사내방송은 곧 시작된다. 사내교육도 예정되어 있다.';
     const env = await setup({ globalBans: ['사내'], globalStructureBans: [] }, body => {

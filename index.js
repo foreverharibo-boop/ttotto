@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.28';
+} from './detector.js?v=1.13.29';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -17,7 +17,11 @@ import {
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
 import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.21';
-import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.28';
+import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.29';
+import {
+    REPETITION_FORMATS, MAX_CUSTOM_EXCLUSIONS, MAX_DELIMITER_LENGTH,
+    normalizeRepetitionExclusions, repetitionExclusionKey, repetitionScopeInstruction,
+} from './repetition-exclusions.js?v=1.13.29';
 
 const FETCH_HOOK_OWNER = Symbol('ttotto.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('ttotto.preparePrompt');
@@ -31,7 +35,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.28';
+const EXTENSION_VERSION = '1.13.29';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -93,6 +97,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     excludeAllTaggedBlocks: true,
     excludedTags: '',
     excludedClasses: '',
+    repetitionExclusions: { formats: ['codeBlock'], custom: [] },
 });
 const EMPTY_ANALYSIS = Object.freeze({
     fingerprint: '', messageFingerprint: '', messages: [], localPatterns: [], smartPatterns: [],
@@ -489,6 +494,7 @@ function getSettings() {
         : {};
     settings.excludedTags = String(settings.excludedTags ?? '');
     settings.excludedClasses = String(settings.excludedClasses ?? '');
+    settings.repetitionExclusions = normalizeRepetitionExclusions(settings.repetitionExclusions);
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     settings.banPreserveLength = Boolean(settings.banPreserveLength);
@@ -726,15 +732,13 @@ export function containsExactBanTerm(text, rawTerm) {
 }
 
 export function stripBanCounterText(text) {
-    const withoutReasoning = String(text ?? '').replace(
-        /<(think(?:ing)?|reasoning|analysis|reflection|scratchpad)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi,
-        ' ',
-    );
     // The offense counter deliberately ignores the user's repetition-analysis
     // exclusions. A hidden/tagged block must never create a flame, even when
     // the user chose to analyze some tagged prose for repetition elsewhere.
-    return stripNonProse(withoutReasoning, { excludeAllTaggedBlocks: true }, { clip: false })
+    return stripNonProse(text, { excludeAllTaggedBlocks: true }, { clip: false, preserveCode: true })
         .normalize('NFKC')
+        // Markdown underline markers are not part of the banned word itself.
+        .replace(/(?<!_)__(?!_)(\S(?:[\s\S]*?\S)?)__(?!_)/g, ' $1 ')
         .trim();
 }
 
@@ -1364,12 +1368,10 @@ function rememberCurrentMessages(messages) {
     let changed = false;
     for (const message of messages) {
         const uuid = message.characterUuid;
-        // Store only the prose the detector would actually analyze: the same
-        // exclusion rules (info panels, tag/HTML blocks, custom tags/classes)
-        // are applied before the text is persisted, so settings.json never
-        // carries decorative HTML that every later analysis would strip again
-        // anyway. No length limit is applied to the stored prose.
-        const storedText = stripNonProse(message.text, settings, { clip: false });
+        // Strip legacy hidden panels/tags, but retain visible formatting/code.
+        // Apply selectable repetition exclusions only when reading the memory,
+        // so unchecking an option can analyze the stored text again.
+        const storedText = stripNonProse(message.text, settings, { clip: false, preserveCode: true });
         if (storedText.length < 8) continue;
         const history = Array.isArray(settings.characterHistory[uuid]) ? settings.characterHistory[uuid] : [];
         const record = {
@@ -1405,7 +1407,7 @@ export function migrateStoredMemoryOnce() {
     if (Number(settings.memoryStripVersion) >= 1) return;
     for (const [uuid, history] of Object.entries(settings.characterHistory)) {
         settings.characterHistory[uuid] = (Array.isArray(history) ? history : [])
-            .map((item) => ({ ...item, text: stripNonProse(String(item?.text ?? ''), settings, { clip: false }) }))
+            .map((item) => ({ ...item, text: stripNonProse(String(item?.text ?? ''), settings, { clip: false, preserveCode: true }) }))
             .filter((item) => item.text.length >= 8)
             .slice(-50);
     }
@@ -1602,6 +1604,7 @@ function getContextNames() {
 function smartPatternsForMessages(state, messages) {
     const settings = getSettings();
     if (!settings.smartAnalysis || state?.smart?.stale || !state?.smart?.patterns?.length) return [];
+    if ((state.smart.repetitionExclusionKey ?? repetitionExclusionKey()) !== repetitionExclusionKey(settings.repetitionExclusions)) return [];
     const savedKeys = state.smart.messageKeys ?? [];
     if (!savedKeys.length) return [];
     const current = new Set(messages.map((message) => message.key));
@@ -1630,6 +1633,7 @@ function analysisDependencyFingerprint(settings, state) {
         excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
         excludedTags: settings.excludedTags,
         excludedClasses: settings.excludedClasses,
+        repetitionExclusions: settings.repetitionExclusions,
         globalBans: settings.globalBans,
         globalBanIds: settings.globalBanIds,
         globalStructureBans: settings.globalStructureBans,
@@ -1668,6 +1672,7 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
         settings.excludeAllTaggedBlocks,
         settings.excludedTags,
         settings.excludedClasses,
+        repetitionExclusionKey(settings.repetitionExclusions),
     ].join('|');
     const activeUuids = [...new Set(messages.map((message) => message.characterUuid).filter(Boolean))];
     const activeAllowances = activeUuids.flatMap((uuid) => getCharacterAllowance(uuid, false)?.ignoredPatterns ?? []);
@@ -1699,6 +1704,7 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
             excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
             banPreventionStrong: settings.banPreventionStrong,
             banPreserveLength: settings.banPreserveLength,
+            repetitionExclusions: settings.repetitionExclusions,
         },
     );
 
@@ -2238,7 +2244,9 @@ export function createResponseGuardPlan(body, type = observedGenerationType) {
         .slice(0, Math.max(1, Number(settings.maxInjectedPatterns) || 6));
     const relevant = [...permanent, ...detected].filter(x => !x.characterUuid || x.characterUuid === identity?.uuid);
     const rules = settings.responseGuardBan ? relevant.map(x => ({
-        label: x.label, instruction: x.instruction,
+        label: x.label,
+        instruction: [x.instruction, x.source !== 'pinned' ? repetitionScopeInstruction(settings.repetitionExclusions) : ''].filter(Boolean).join('\n'),
+        repetition: x.source !== 'pinned',
         scope: x.kind === 'permanent-term' ? 'all narration and all dialogue'
             : `${x.scope}${x.speaker ? ` by ${x.speaker}` : ''}`,
         term: x.kind === 'permanent-term' ? String(x.example ?? '') : '',
@@ -2261,6 +2269,7 @@ export function createResponseGuardPlan(body, type = observedGenerationType) {
     }
     if (!rules.length && (!echo || !userText.trim())) return null;
     return { rules, terms: rules.filter(x => x.term), userText, echo,
+        repetitionExclusions: structuredClone(settings.repetitionExclusions),
         strongEcho: Boolean(settings.echoPreventionStrong),
         maxRewrites: settings.responseGuardMaxRewrites,
         minConfidence: settings.responseGuardMinConfidence,
@@ -2511,6 +2520,7 @@ async function runSmartAnalysis({ manual = false } = {}) {
     const chatIdentity = getChatIdentity();
     const metadata = getContext().chatMetadata;
     const revision = smartRevision;
+    const exclusionKey = repetitionExclusionKey(settings.repetitionExclusions);
     const messageFingerprint = fingerprintMessages(messages);
     if (messages.length < 3) {
         if (manual) toastr.info('정밀 분석에는 AI 답변이 최소 3개 필요해요.', '🌀또또');
@@ -2525,7 +2535,8 @@ async function runSmartAnalysis({ manual = false } = {}) {
         && getSettings().enabled && getSettings().smartAnalysis
         && chatIdentity === getChatIdentity() && getContext().chatMetadata === metadata
         && getChatState(false) === state && state.enabled && smartRevision === revision
-        && fingerprintMessages(collectAssistantMessages()) === messageFingerprint;
+        && fingerprintMessages(collectAssistantMessages()) === messageFingerprint
+        && repetitionExclusionKey(getSettings().repetitionExclusions) === exclusionKey;
     updateUi();
 
     try {
@@ -2534,6 +2545,7 @@ async function runSmartAnalysis({ manual = false } = {}) {
         const patterns = parseSmartResponse(response, messages);
         state.smart = {
             fingerprint: fingerprintMessages(messages),
+            repetitionExclusionKey: exclusionKey,
             messageKeys: messages.map((message) => message.key),
             patterns,
             lastAssistantCount: messages.length,
@@ -3239,6 +3251,67 @@ function renderPromptPlacements(settings = getSettings()) {
     renderPromptPositionSelect('ttotto-weave-prompt-position', settings.weavePromptPosition);
 }
 
+function renderRepetitionExclusions(settings) {
+    const config = settings.repetitionExclusions;
+    const formats = document.getElementById('ttotto-repetition-formats');
+    const custom = document.getElementById('ttotto-repetition-custom');
+    if (!formats || !custom) return;
+    // Do not rebuild focused controls during background analysis/UI updates.
+    const key = repetitionExclusionKey(config);
+    if (formats.dataset.config === key) return;
+    formats.dataset.config = key;
+    formats.replaceChildren();
+    custom.replaceChildren();
+    const checkboxRow = (text, checked, onChange) => {
+        const label = document.createElement('label');
+        label.className = 'ttotto-setting-row ttotto-inner-setting';
+        const span = document.createElement('span');
+        span.textContent = text;
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        input.addEventListener('change', () => onChange(input.checked));
+        label.append(span, input);
+        return label;
+    };
+    for (const format of REPETITION_FORMATS) {
+        formats.append(checkboxRow(format.label, config.formats.includes(format.id), checked => {
+            const next = getSettings().repetitionExclusions;
+            next.formats = checked ? [...next.formats, format.id] : next.formats.filter(id => id !== format.id);
+            saveRepetitionExclusions(next);
+        }));
+    }
+    config.custom.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = 'ttotto-custom-exclusion-row';
+        row.append(checkboxRow(`${item.start} … ${item.end}`, item.enabled, checked => {
+            const next = getSettings().repetitionExclusions;
+            next.custom[index].enabled = checked;
+            saveRepetitionExclusions(next);
+        }));
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'menu_button'; remove.textContent = '삭제';
+        remove.setAttribute('aria-label', `${item.start} … ${item.end} 제외 구간 삭제`);
+        remove.addEventListener('click', () => {
+            const next = getSettings().repetitionExclusions;
+            next.custom.splice(index, 1);
+            saveRepetitionExclusions(next);
+        });
+        row.append(remove);
+        custom.append(row);
+    });
+}
+
+function saveRepetitionExclusions(value) {
+    const settings = getSettings();
+    settings.repetitionExclusions = normalizeRepetitionExclusions(value);
+    saveSettings();
+    markSmartResultsStale();
+    invalidateAnalysis();
+    if (settings.enabled && settings.smartAnalysis) scheduleSmartAnalysis({ force: true });
+    updateUi();
+}
+
 function updateUi(analysisOverride = null) {
     if (!uiReady) return;
     const settings = getSettings();
@@ -3292,6 +3365,7 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-excluded-tags').value = settings.excludedTags;
     document.getElementById('ttotto-excluded-classes').value = settings.excludedClasses;
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
+    renderRepetitionExclusions(settings);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
     document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${isEchoPreventionEnabled(settings) ? (settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
 
@@ -3479,6 +3553,26 @@ function bindUi() {
     bindSetting('ttotto-exclude-all-tags', 'excludeAllTaggedBlocks', Boolean);
     bindSetting('ttotto-excluded-tags', 'excludedTags', String);
     bindSetting('ttotto-excluded-classes', 'excludedClasses', String);
+
+    document.getElementById('ttotto-exclusion-add').addEventListener('click', () => {
+        const startInput = document.getElementById('ttotto-exclusion-start');
+        const endInput = document.getElementById('ttotto-exclusion-end');
+        const start = startInput.value, end = endInput.value;
+        if (!start.trim() || !end.trim() || /[\r\n]/.test(start + end)
+            || start.length > MAX_DELIMITER_LENGTH || end.length > MAX_DELIMITER_LENGTH) {
+            toastr.info('시작·끝 기호를 각각 1~80자로 입력해 주세요.', '🌀또또'); return;
+        }
+        const next = getSettings().repetitionExclusions;
+        if (next.custom.some(item => item.start === start && item.end === end)) {
+            toastr.info('이미 추가한 구간이에요.', '🌀또또'); return;
+        }
+        if (next.custom.length >= MAX_CUSTOM_EXCLUSIONS) {
+            toastr.info('직접 추가 구간은 최대 30개예요.', '🌀또또'); return;
+        }
+        next.custom.push({ start, end, enabled: true });
+        saveRepetitionExclusions(next);
+        startInput.value = ''; endInput.value = '';
+    });
 
     document.getElementById('ttotto-refresh-preset-prompts')?.addEventListener('click', async () => {
         await loadPresetPromptApi();
