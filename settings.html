@@ -135,9 +135,25 @@
             <label class="ttotto-setting-row" for="ttotto-echo-prevention-strong">
               <span>
                 <strong>에코 방지 강화 모드</strong>
-                <small>이것만 켜도 기본 에코 방지 지시까지 포함돼요. 대사·서술을 각각 자체 확인하도록 더 강하게 요청하며, 별도 검수·자동 재요청 기능은 아니에요. 에코 방지를 완전히 끄려면 두 옵션을 모두 꺼 주세요.</small>
+                <small>이것만 켜도 기본 에코 방지 지시까지 포함돼요. 대사·서술을 각각 자체 확인하도록 더 강하게 요청하며, 별도 검수·자동 재요청 기능은 아니에요. 에코 방지를 완전히 끄려면 기본·강화·미모ver 에코방지를 모두 꺼 주세요.</small>
               </span>
               <input id="ttotto-echo-prevention-strong" type="checkbox">
+            </label>
+
+            <label class="ttotto-setting-row" for="ttotto-ban-prompt-mimo">
+              <span>
+                <strong>미모ver 금지어</strong>
+                <small>등록한 금지어·구조는 유지하고, 기존·강화·분량 유지 주입문을 자체 검수 지시 없는 미모용 문구로 교체해요.</small>
+              </span>
+              <input id="ttotto-ban-prompt-mimo" type="checkbox">
+            </label>
+
+            <label class="ttotto-setting-row" for="ttotto-echo-prompt-mimo">
+              <span>
+                <strong>미모ver 에코방지</strong>
+                <small>이것만 켜도 적용돼요. 기본·강화 에코 주입문을 자체 검수 지시 없는 미모용 문구로 교체해요.</small>
+              </span>
+              <input id="ttotto-echo-prompt-mimo" type="checkbox">
             </label>
 
           </div>

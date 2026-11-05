@@ -8,7 +8,7 @@ import {
     normalizeSmartPattern,
     splitDialogueAndNarration,
     stripNonProse,
-} from './detector.js?v=1.13.30';
+} from './detector.js?v=1.13.31';
 import {
     buildCharacterAiPromptInjection,
     buildMetagamingPromptInjection,
@@ -35,7 +35,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.30';
+const EXTENSION_VERSION = '1.13.31';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -68,6 +68,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     echoPreventionStrong: false,
     banPreventionStrong: false,
     banPreserveLength: false,
+    banPromptMimo: false,
+    echoPromptMimo: false,
     responseGuardEnabled: false,
     responseGuardBan: true,
     responseGuardEcho: true,
@@ -505,6 +507,8 @@ function getSettings() {
     settings.echoPreventionStrong = Boolean(settings.echoPreventionStrong);
     settings.banPreventionStrong = Boolean(settings.banPreventionStrong);
     settings.banPreserveLength = Boolean(settings.banPreserveLength);
+    settings.banPromptMimo = Boolean(settings.banPromptMimo);
+    settings.echoPromptMimo = Boolean(settings.echoPromptMimo);
     settings.responseGuardEnabled = Boolean(settings.responseGuardEnabled);
     settings.responseGuardBan = settings.responseGuardBan !== false;
     settings.responseGuardEcho = settings.responseGuardEcho !== false;
@@ -1634,6 +1638,7 @@ function analysisDependencyFingerprint(settings, state) {
         dialogueEnabled: settings.dialogueEnabled,
         banPreventionStrong: settings.banPreventionStrong,
         banPreserveLength: settings.banPreserveLength,
+        banPromptMimo: settings.banPromptMimo,
         smartAnalysis: settings.smartAnalysis,
         maxInjectedPatterns: settings.maxInjectedPatterns,
         crossChatMemoryEnabled: settings.crossChatMemoryEnabled,
@@ -1711,6 +1716,7 @@ function analyzeCurrentChat(force = false, preparedMessages = null) {
             excludeAllTaggedBlocks: settings.excludeAllTaggedBlocks,
             banPreventionStrong: settings.banPreventionStrong,
             banPreserveLength: settings.banPreserveLength,
+            banPromptMimo: settings.banPromptMimo,
             repetitionExclusions: settings.repetitionExclusions,
         },
     );
@@ -1791,7 +1797,7 @@ function latestUserSourceText(promptChat, contextChat) {
 }
 
 function isEchoPreventionEnabled(settings) {
-    return Boolean(settings?.echoPreventionEnabled || settings?.echoPreventionStrong);
+    return Boolean(settings?.echoPreventionEnabled || settings?.echoPreventionStrong || settings?.echoPromptMimo);
 }
 
 function buildGenerationInjectionSections(analysisPrompt, settings, generationType = 'normal', promptChat = null, contextChat = null) {
@@ -1803,12 +1809,13 @@ function buildGenerationInjectionSections(analysisPrompt, settings, generationTy
         && type !== 'continue'
         && (chatHasUserTurn(promptChat) || chatHasUserTurn(contextChat));
     const strongEcho = echoApplies && Boolean(settings?.echoPreventionStrong);
-    const temporaryEchoPhrases = echoApplies
+    const mimoEcho = Boolean(settings?.echoPromptMimo);
+    const temporaryEchoPhrases = echoApplies && !mimoEcho
         ? extractEchoPhrases(latestUserSourceText(promptChat, contextChat), settings, strongEcho ? 8 : 4)
         : [];
     return {
         ban: String(analysisPrompt ?? '').trim(),
-        echo: echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases, strongEcho) : '',
+        echo: echoApplies ? buildEchoPreventionInjection(temporaryEchoPhrases, strongEcho, mimoEcho) : '',
     };
 }
 
@@ -3342,6 +3349,10 @@ function updateUi(analysisOverride = null) {
     if (strongBanCheckbox) strongBanCheckbox.checked = Boolean(settings.banPreventionStrong);
     const preserveLengthCheckbox = document.getElementById('ttotto-ban-preserve-length');
     if (preserveLengthCheckbox) preserveLengthCheckbox.checked = Boolean(settings.banPreserveLength);
+    for (const [id, key] of [['ttotto-ban-prompt-mimo', 'banPromptMimo'], ['ttotto-echo-prompt-mimo', 'echoPromptMimo']]) {
+        const checkbox = document.getElementById(id);
+        if (checkbox) checkbox.checked = Boolean(settings[key]);
+    }
     for (const [id, key] of [['ttotto-response-guard-enabled', 'responseGuardEnabled'],
         ['ttotto-response-guard-ban', 'responseGuardBan'], ['ttotto-response-guard-echo', 'responseGuardEcho']]) {
         const element = document.getElementById(id);
@@ -3374,7 +3385,7 @@ function updateUi(analysisOverride = null) {
     document.getElementById('ttotto-custom-exclusions').hidden = Boolean(settings.excludeAllTaggedBlocks);
     renderRepetitionExclusions(settings);
     document.getElementById('ttotto-pattern-count').textContent = String(enabled ? analysis.patterns.length : 0);
-    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${isEchoPreventionEnabled(settings) ? (settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
+    document.getElementById('ttotto-scope-summary').textContent = `${settings.crossChatMemoryEnabled ? '현재+지난 채팅' : '현재 채팅'} 최근 AI 답변 ${settings.windowSize}개 기준 · 서술 ${settings.narrationEnabled ? '켬' : '끔'} · 대사 ${settings.dialogueEnabled ? '켬' : '끔'} · 에코 ${isEchoPreventionEnabled(settings) ? (settings.echoPromptMimo ? '미모ver' : settings.echoPreventionStrong ? '강화' : '방지') : '허용'}`;
 
     renderPatterns(enabled ? analysis.patterns : []);
     const previewPrompt = enabled
@@ -3483,7 +3494,7 @@ function bindSetting(id, key, parser = (value) => value) {
             scheduleSmartAnalysis({ force: true });
         }
         if (key === 'dragBanMenuEnabled') syncDragBanHandlers(settings);
-        if (['metagamingPromptEnabled', 'characterAiPromptEnabled', 'banPromptPosition', 'echoPromptPosition', 'weavePromptPosition'].includes(key)) {
+        if (['metagamingPromptEnabled', 'characterAiPromptEnabled', 'banPromptPosition', 'echoPromptPosition', 'weavePromptPosition', 'banPromptMimo', 'echoPromptMimo'].includes(key)) {
             clearInjectedPrompt();
         }
         invalidateAnalysis();
@@ -3512,6 +3523,8 @@ function bindUi() {
     bindSetting('ttotto-echo-prevention-strong', 'echoPreventionStrong', Boolean);
     bindSetting('ttotto-ban-prevention-strong', 'banPreventionStrong', Boolean);
     bindSetting('ttotto-ban-preserve-length', 'banPreserveLength', Boolean);
+    bindSetting('ttotto-ban-prompt-mimo', 'banPromptMimo', Boolean);
+    bindSetting('ttotto-echo-prompt-mimo', 'echoPromptMimo', Boolean);
     bindSetting('ttotto-response-guard-enabled', 'responseGuardEnabled', Boolean);
     bindSetting('ttotto-response-guard-ban', 'responseGuardBan', Boolean);
     bindSetting('ttotto-response-guard-echo', 'responseGuardEcho', Boolean);

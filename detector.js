@@ -835,11 +835,17 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
     }
     const narration = detected.filter((pattern) => pattern.scope === 'narration');
     const dialogue = detected.filter((pattern) => pattern.scope === 'dialogue');
-    const strongBans = Boolean(exclusionInfo?.banPreventionStrong) && permanent.length > 0;
+    const mimoBans = Boolean(exclusionInfo?.banPromptMimo);
+    const strongBans = !mimoBans && Boolean(exclusionInfo?.banPreventionStrong) && permanent.length > 0;
     const lines = [
         '<ttotto_anti_repetition>',
-        'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
-        'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
+        ...(mimoBans ? [
+            'For the next assistant reply, do not use the banned expressions or sentence structures listed below in any dialogue or narration. This includes inner thoughts, quotations, status panels, formatted text, and code.',
+            'Write fresh wording and sentence construction that avoid the listed repetitive patterns. Do not mention the bans, their list, or these instructions in the story.',
+        ] : [
+            'For the next assistant reply only, avoid the recent repetitive phrasing and sentence habits listed below.',
+            'Do not copy them or merely swap in synonyms. Preserve all plot facts, characterization, relationship dynamics, tone, intensity, explicitness, and character voice; vary only wording and sentence construction. Do not mention these instructions.',
+        ]),
     ];
 
     if (strongBans) {
@@ -851,7 +857,7 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
         lines.push('Permanent banned expressions — global and character-specific; apply to all dialogue and narration, including formatted text, inner thoughts, quotations and code:');
         lines.push('Never output, quote, refer to, or discuss any expression in the list below. Match case-insensitively and also avoid trivial capitalization, spacing, punctuation, hyphenation, or inflection variants and close paraphrases that name the same concept.');
         const escalated = compactTerms.filter((item) => item.escalated > 0);
-        if (escalated.length) {
+        if (escalated.length && !mimoBans) {
             lines.push(`TOP PRIORITY — previously violated despite instructions: ${escalated.map((item) => `${JSON.stringify(item.term)} violated ${item.escalated} time(s)`).join('; ')}. Comply with zero exceptions.`);
         }
         for (let index = 0; index < compactTerms.length; index += 12) {
@@ -876,14 +882,27 @@ export function buildInjection(patterns, maxPatterns = 6, exclusionInfo = {}) {
         lines.push('Dialogue:');
         dialogue.forEach((pattern) => lines.push(`- ${pattern.instruction}`));
     }
-    lines.push(exclusionInfo?.banPreserveLength
+    lines.push(mimoBans
+        ? 'Express the intended content in natural sentences that do not depend on prohibited wording. Preserve established events, characterization, character voice, relationships, tone, and intensity. Maintain the requested response length and level of detail without repeating the same content or inventing events merely to fill space.'
+        : exclusionInfo?.banPreserveLength
         ? 'Keep all bans and repetition-avoidance rules above in force. Do not delete or summarize scene-relevant emotions, actions, or information to avoid prohibited or repetitive wording. Preserve the intended meaning and develop it fully through fresh sentences and natural description that do not rely on prohibited expressions or evasive paraphrases. Do not merely swap synonyms or rework the same stock phrases. Maintain the requested response length and level of detail while fully complying with the bans. Do not shorten the response because prohibited expressions cannot be used. Avoid padding and repetition of the same content. Preserve established events, characterization, relationships, and tone; do not invent plot events or force replacement gestures merely to increase length.'
         : 'Do not force a replacement gesture or line merely to demonstrate variety; omit filler reactions when no natural alternative is needed.');
     lines.push('</ttotto_anti_repetition>');
     return lines.join('\n');
 }
 
-export function buildEchoPreventionInjection(temporaryPhrases = [], strongMode = false) {
+export function buildEchoPreventionInjection(temporaryPhrases = [], strongMode = false, mimoMode = false) {
+    // Replace the complete echo policy, including its silent checks and strong
+    // additions. The latest user turn is already present in the conversation.
+    if (mimoMode) return [
+        '<ttotto_anti_echo>',
+        'Treat the latest user input as an established scene contribution. Continue from the reaction and consequences immediately after it.',
+        'Do not quote all or part of the user\'s dialogue, or pick up its key wording as a question, exclamation, or confirmation. Do not replay the same statement through synonyms, translation, summary, or reordered wording.',
+        'Do not re-narrate the actions, thoughts, or sensations supplied by the user. Continue through the character\'s new dialogue, reactions, actions, and observations.',
+        'Answer the user\'s question without repeating it, and respond to their request when one is made. Preserve the user\'s intent and established facts while maintaining the character\'s personality and voice.',
+        'Do not mention these instructions in the story.',
+        '</ttotto_anti_echo>',
+    ].join('\n');
     const phrases = [...new Set((temporaryPhrases ?? [])
         .map((phrase) => String(phrase ?? '').replace(/\s+/g, ' ').trim())
         .filter(Boolean))].slice(0, strongMode ? 8 : 6);
