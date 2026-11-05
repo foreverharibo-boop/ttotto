@@ -119,10 +119,12 @@ test('MiMo toggles replace only their own prompt, refresh unchanged-chat caches,
     } finally { module.onDisable(); }
 });
 
-test('both optional controls sit below strong echo in the existing horizontal checkbox layout', async () => {
+test('MiMo controls have a separate bordered group immediately after echo with the existing horizontal checkbox layout', async () => {
     const html = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
-    const group = html.match(/<details id="ttotto-group-echo"[\s\S]*?<\/details>/)[0];
-    assert.ok(group.indexOf('id="ttotto-echo-prevention-strong"') < group.indexOf('id="ttotto-ban-prompt-mimo"'));
+    const echo = html.match(/<details id="ttotto-group-echo"[\s\S]*?<\/details>/)[0];
+    const group = html.match(/<details id="ttotto-group-mimo" class="ttotto-settings-group">[\s\S]*?<\/details>/)[0];
+    assert.doesNotMatch(echo, /ttotto-(?:ban|echo)-prompt-mimo/);
+    assert.ok(html.slice(html.indexOf(echo) + echo.length).trimStart().startsWith(group));
     assert.ok(group.indexOf('id="ttotto-ban-prompt-mimo"') < group.indexOf('id="ttotto-echo-prompt-mimo"'));
     for (const key of ['ban', 'echo']) {
         assert.match(group, new RegExp(`<label class="ttotto-setting-row" for="ttotto-${key}-prompt-mimo">`));
