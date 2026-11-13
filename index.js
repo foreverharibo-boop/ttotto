@@ -16,7 +16,7 @@ import {
 } from './important-prompts.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
 import { findHistoryEnd } from './history-position.js';
-import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.21';
+import { JEV_KEY_STORAGE, JEV_URL, requestJev } from './jev-client.js?v=1.13.33';
 import { GuardError, runResponseGuard, responseGuardSkipReason } from './response-guard.js?v=1.13.30';
 import {
     REPETITION_FORMATS, MAX_CUSTOM_EXCLUSIONS, MAX_DELIMITER_LENGTH,
@@ -35,7 +35,7 @@ const LEGACY_CHARACTER_AI_PROMPT_KEY = 'ttotto_weave_character_ai';
 const LEGACY_IMPORTANT_PROMPT_KEY = 'ttotto_important_prompts';
 const CHAT_STATE_KEY = 'ttotto';
 const LOG_PREFIX = '[🌀또또]';
-const EXTENSION_VERSION = '1.13.32';
+const EXTENSION_VERSION = '1.13.33';
 const BAN_OFFENSE_VERSION = 3;
 const MAX_OFFENSE_EVIDENCE = 1000;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -71,6 +71,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     banPromptMimo: false,
     echoPromptMimo: false,
     responseGuardEnabled: false,
+    jevProfileId: '',
     responseGuardBan: true,
     responseGuardEcho: true,
     responseGuardMaxRewrites: 2,
@@ -509,6 +510,7 @@ function getSettings() {
     settings.banPreserveLength = Boolean(settings.banPreserveLength);
     settings.banPromptMimo = Boolean(settings.banPromptMimo);
     settings.echoPromptMimo = Boolean(settings.echoPromptMimo);
+    settings.jevProfileId = typeof settings.jevProfileId === 'string' ? settings.jevProfileId.trim() : '';
     settings.responseGuardEnabled = Boolean(settings.responseGuardEnabled);
     settings.responseGuardBan = settings.responseGuardBan !== false;
     settings.responseGuardEcho = settings.responseGuardEcho !== false;
@@ -2109,7 +2111,7 @@ function activateMainRequest(decision) {
 function mainRequestDecision(body, callerStack = '') {
     // 100LOG and our Jev adapter use this same ST endpoint. They are utility
     // requests, even if an async stack happens to contain the main sender.
-    if (body?.chat_completion_source === 'custom' && String(body.custom_url ?? '').startsWith(JEV_URL)) {
+    if (body?.ttotto_jev_request === true || (body?.chat_completion_source === 'custom' && String(body.custom_url ?? '').startsWith(JEV_URL))) {
         return { eligible: false, reason: 'jev_utility_request', rawType: body.type };
     }
     const rawType = String(body?.type ?? '').trim().toLocaleLowerCase();
@@ -2348,6 +2350,7 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch, 
     };
     try {
         const key = readJevKey();
+        const profileId = getSettings().jevProfileId;
         const checkContext = () => {
             if (!runtimeActive || plan.chatIdentity !== getChatIdentity()
                 || !getSettings().responseGuardEnabled || !getChatState(false)?.enabled) controller.abort();
@@ -2367,8 +2370,8 @@ async function guardMainResponse(url, options, rest, body, plan, originalFetch, 
             },
             judge: async (state, questions, signal) => {
                 checkContext();
-                if (!key) throw new GuardError('Jev 키가 없어 의미 검수를 건너뛰었어요. 금지어 직접 검사는 수행했어요.');
-                return requestJev(state, questions, { key, signal,
+                if (!profileId && !key) throw new GuardError('Jev 키·연결 프로필이 없어 의미 검수를 건너뛰었어요. 금지어 직접 검사는 수행했어요.');
+                return requestJev(state, questions, { key, profileId, context: getContext(), signal,
                     fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
             },
             clean: stripBanCounterText,
@@ -3363,7 +3366,13 @@ function updateUi(analysisOverride = null) {
     const confidenceSelect = document.getElementById('ttotto-response-guard-confidence');
     if (confidenceSelect) confidenceSelect.value = String(settings.responseGuardMinConfidence);
     const keyStatus = document.getElementById('ttotto-jev-key-status');
-    if (keyStatus && !keyStatus.dataset.testing) keyStatus.textContent = readJevKey() ? '이 브라우저에 또또 키가 저장되어 있어요.' : 'Jev API 키를 연결해 주세요.';
+    const jevProfile = document.getElementById('ttotto-jev-profile');
+    if (jevProfile) jevProfile.value = settings.jevProfileId;
+    const jevDirect = document.getElementById('ttotto-jev-direct');
+    if (jevDirect) jevDirect.hidden = Boolean(settings.jevProfileId);
+    const jevDelete = document.getElementById('ttotto-jev-delete');
+    if (jevDelete) jevDelete.hidden = Boolean(settings.jevProfileId);
+    if (keyStatus && !keyStatus.dataset.testing) keyStatus.textContent = settings.jevProfileId ? 'Jev 연결 프로필 선택됨 · 연결 확인을 눌러 주세요.' : readJevKey() ? '이 브라우저에 또또 키가 저장되어 있어요.' : 'Jev API 키를 연결해 주세요.';
     renderResponseGuardReport();
     const metagamingCheckbox = document.getElementById('ttotto-metagaming-prompt-enabled');
     if (metagamingCheckbox) metagamingCheckbox.checked = Boolean(settings.metagamingPromptEnabled);
@@ -3435,6 +3444,26 @@ function populateProfiles() {
     }
     select.value = currentValue;
 
+    const jevSelect = document.getElementById('ttotto-jev-profile');
+    if (jevSelect) {
+        jevSelect.replaceChildren();
+        const direct = document.createElement('option');
+        direct.value = ''; direct.textContent = 'Jev API 키 직접 입력';
+        jevSelect.append(direct);
+        for (const option of [...select.options]) {
+            if (!option.value) continue;
+            const clone = document.createElement('option');
+            clone.value = option.value; clone.textContent = option.textContent;
+            jevSelect.append(clone);
+        }
+        if (settings.jevProfileId && ![...jevSelect.options].some(option => option.value === settings.jevProfileId)) {
+            const missing = document.createElement('option');
+            missing.value = settings.jevProfileId; missing.textContent = '저장된 Jev 연결 프로필을 찾을 수 없음';
+            jevSelect.append(missing);
+        }
+        jevSelect.value = settings.jevProfileId;
+    }
+
     // 드래그 금지 보조 AI 연결 선택 — 순수 연결 프로필 목록만 보여준다.
     // 실제 사용 여부(온/오프)는 이 드롭다운이 아니라 '구조 금지 AI 분석' 체크박스(dragStructureAi)가 결정한다.
     const dragSelect = document.getElementById('ttotto-drag-ai-profile');
@@ -3478,7 +3507,7 @@ function bindSetting(id, key, parser = (value) => value) {
             clearInjectedPrompt();
             syncDragBanHandlers(settings);
         }
-        if (key.startsWith('responseGuard')) abortResponseGuards();
+        if (key.startsWith('responseGuard') || key === 'jevProfileId') abortResponseGuards();
         saveSettings();
         if (['windowSize', 'excludeAllTaggedBlocks', 'excludedTags', 'excludedClasses', 'crossChatMemoryEnabled'].includes(key)) markSmartResultsStale();
         if (key === 'smartAnalysis') {
@@ -3530,32 +3559,37 @@ function bindUi() {
     bindSetting('ttotto-response-guard-echo', 'responseGuardEcho', Boolean);
     bindSetting('ttotto-response-guard-rewrites', 'responseGuardMaxRewrites', Number);
     bindSetting('ttotto-response-guard-confidence', 'responseGuardMinConfidence', Number);
+    bindSetting('ttotto-jev-profile', 'jevProfileId', value => String(value).trim());
+    document.getElementById('ttotto-jev-refresh').addEventListener('click', populateProfiles);
     document.getElementById('ttotto-jev-connect').addEventListener('click', async () => {
         const input = document.getElementById('ttotto-jev-key');
         const status = document.getElementById('ttotto-jev-key-status');
         const button = document.getElementById('ttotto-jev-connect');
         const key = input.value.trim() || readJevKey();
+        const profileId = getSettings().jevProfileId;
+        const profileSelect = document.getElementById('ttotto-jev-profile');
+        profileSelect.disabled = true;
         button.disabled = true;
         status.dataset.testing = 'true';
         status.textContent = 'Jev 연결 확인 중…';
         try {
             await requestJev({ text: 'The sky is blue.' }, { test: { type: 'choice',
                 instructions: 'Does text state that the sky is blue?', criteria: { yes: 'It does.', no: 'It does not.' } } },
-            { key, signal: AbortSignal.timeout(30000), fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
-            globalThis.localStorage.setItem(JEV_KEY_STORAGE, key);
-            input.value = '';
-            status.textContent = 'Jev 연결 확인 완료 · 또또 키 저장됨';
+            { key, profileId, context: getContext(), signal: AbortSignal.timeout(30000), fetcher: globalThis.fetch.bind(globalThis), headers: getContext().getRequestHeaders?.() });
+            if (getSettings().jevProfileId !== profileId) return;
+            if (!profileId) { globalThis.localStorage.setItem(JEV_KEY_STORAGE, key); input.value = ''; }
+            status.textContent = profileId ? 'Jev 연결 확인 완료 · 선택한 프로필 사용' : 'Jev 연결 확인 완료 · 또또 키 저장됨';
             globalThis.toastr?.success?.('Jev에 연결됐어요.', '🌀또또');
         } catch (error) {
             status.textContent = error?.name === 'TimeoutError' ? '연결 확인 시간이 초과됐어요.' : String(error.message || '연결 실패');
-        } finally { delete status.dataset.testing; button.disabled = false; }
+        } finally { delete status.dataset.testing; button.disabled = false; profileSelect.disabled = false; }
     });
     document.getElementById('ttotto-jev-delete').addEventListener('click', () => {
         try { globalThis.localStorage.removeItem(JEV_KEY_STORAGE); }
         catch { globalThis.toastr?.error?.('브라우저에서 키 삭제를 허용하지 않았어요.', '🌀또또'); return; }
         document.getElementById('ttotto-jev-key').value = '';
-        getSettings().responseGuardEnabled = false;
-        abortResponseGuards(); saveSettings(); updateUi();
+        if (!getSettings().jevProfileId) { getSettings().responseGuardEnabled = false; abortResponseGuards(); }
+        saveSettings(); updateUi();
     });
     bindSetting('ttotto-metagaming-prompt-enabled', 'metagamingPromptEnabled', Boolean);
     bindSetting('ttotto-character-ai-prompt-enabled', 'characterAiPromptEnabled', Boolean);

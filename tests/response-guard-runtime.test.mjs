@@ -848,3 +848,40 @@ for (const [flags, reason] of [
         });
     }
 }
+
+test('NanoGPT profile review works without a direct key and its request bypasses the main guard', async () => {
+    const env = await setup({ jevProfileId: 'nano-jev' }, body => {
+        if (body.model === 'typesafe/jev-latest') {
+            assert.equal(body.ttotto_jev_request, true);
+            assert.equal(body.secret_id, 'nano-secret');
+            assert.equal(body.messages.length, 1);
+            assert.doesNotMatch(JSON.stringify(body), /<ANTI_METAGAMING>|<CHARACTER_KNOWLEDGE_AND_CONTEXT>|MINIMAL REVISION/);
+            const { questions } = JSON.parse(body.custom_include_body).response_format;
+            return answer(questions).json().then(result => nativeReply(JSON.stringify(result)));
+        }
+        return nativeReply('He opened the door.');
+    });
+    env.stored.delete(JEV_KEY_STORAGE);
+    const snapshot = structuredClone(env.context.oaiSettings);
+    const profile = { id: 'nano-jev', api: 'custom', model: 'typesafe/jev-latest', 'api-url': 'https://nano-gpt.com/api/v1', 'secret-id': 'nano-secret' };
+    env.context.ConnectionManagerRequestService = {
+        getSupportedProfiles: () => [profile], validateProfile: () => ({ selected: 'openai', source: 'custom' }),
+        async sendRequest(id, messages, tokens, options, overrides) {
+            assert.equal(id, profile.id);
+            const body = { model: profile.model, secret_id: profile['secret-id'], custom_url: profile['api-url'],
+                chat_completion_source: 'custom', messages, stream: options.stream, ...overrides };
+            // Deliberately model the strongest main-sender stack: the explicit
+            // utility marker must prevent recursive guard/injection regardless.
+            return (await fromMainSender(() => globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(body), signal: options.signal }))).json();
+        },
+    };
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(env.sent.filter(row => row.body.model === 'typesafe/jev-latest').length, 1);
+        assert.equal(env.sent.filter(row => row.body.model === 'original-main').length, 1);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
+        assert.deepEqual(env.context.oaiSettings, snapshot);
+        assert.equal(env.stored.has(JEV_KEY_STORAGE), false);
+        assert.equal(env.stored.get('hundredlog.typesafeKey'), 'untouched-100log-key');
+    } finally { env.cleanup(); }
+});
