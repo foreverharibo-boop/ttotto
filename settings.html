@@ -298,14 +298,14 @@
                 </select>
                 <small>구조 위반은 Jev 확신도 0.95 이상일 때 수정해요. 확정 위반의 문장 위치를 못 찾으면 AI에게 해당 부분을 찾아 최소 수정하도록 요청해요. 비슷한 단어·주제나 추측만으로는 수정하지 않아요. 정확한 금지어 검사는 그대로예요. 확신도는 실제 정답률을 뜻하지 않아요.</small>
               </label>
-              <label class="ttotto-field" for="ttotto-jev-profile">
-                <span>Jev 검수 연결</span><select id="ttotto-jev-profile" class="text_pole"></select>
-                <small>NanoGPT의 Jev는 커스텀(OpenAI 호환)으로 저장한 프로필을 선택해 주세요. 프로필의 주소·키·모델을 사용해요.</small>
+              <label class="ttotto-field" for="ttotto-jev-provider">
+                <span>Jev 서비스</span><select id="ttotto-jev-provider" class="text_pole"><option value="typesafe">TypeSafe</option><option value="nanogpt">NanoGPT</option></select>
+                <small>선택한 서비스의 API 키를 입력해 주세요. NanoGPT를 선택하면 나노지피티의 Jev로 검수해요.</small>
               </label>
-              <label id="ttotto-jev-direct" class="ttotto-field" for="ttotto-jev-key">
-                <span>Jev API 키</span><input id="ttotto-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="또또 전용 키 입력">
+              <label class="ttotto-field" for="ttotto-jev-key">
+                <span id="ttotto-jev-key-label">TypeSafe API 키</span><input id="ttotto-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="TypeSafe API 키 입력">
               </label>
-              <div class="ttotto-button-row"><button id="ttotto-jev-refresh" class="menu_button" type="button">프로필 새로고침</button><button id="ttotto-jev-connect" class="menu_button" type="button">연결 확인·저장</button><button id="ttotto-jev-delete" class="menu_button" type="button">또또 키 삭제</button></div>
+              <div class="ttotto-button-row"><button id="ttotto-jev-connect" class="menu_button" type="button">연결 확인·저장</button><button id="ttotto-jev-delete" class="menu_button" type="button">또또 키 삭제</button></div>
               <small id="ttotto-jev-key-status" role="status">Jev API 키를 연결해 주세요.</small>
             </div>
 

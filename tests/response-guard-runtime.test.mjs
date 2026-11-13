@@ -849,39 +849,62 @@ for (const [flags, reason] of [
     }
 }
 
-test('NanoGPT profile review works without a direct key and its request bypasses the main guard', async () => {
-    const env = await setup({ jevProfileId: 'nano-jev' }, body => {
+test('NanoGPT direct-key review runs after exact correction without touching TypeSafe or main settings', async () => {
+    let generations = 0;
+    const env = await setup({ jevProvider: 'nanogpt' }, body => {
         if (body.model === 'typesafe/jev-latest') {
-            assert.equal(body.ttotto_jev_request, true);
-            assert.equal(body.secret_id, 'nano-secret');
-            assert.equal(body.messages.length, 1);
+            assert.equal(body.custom_url, 'https://nano-gpt.com/api/v1/decisions?via=');
+            assert.equal(JSON.parse(body.custom_include_headers).Authorization, 'Bearer nano-test-key');
             assert.doesNotMatch(JSON.stringify(body), /<ANTI_METAGAMING>|<CHARACTER_KNOWLEDGE_AND_CONTEXT>|MINIMAL REVISION/);
-            const { questions } = JSON.parse(body.custom_include_body).response_format;
-            return answer(questions).json().then(result => nativeReply(JSON.stringify(result)));
+            return answer(JSON.parse(body.custom_include_body).questions);
         }
-        return nativeReply('He opened the door.');
+        assert.equal(body.model, 'original-main');
+        return nativeReply(++generations === 1 ? 'His jaw tightened.' : 'He opened the door.');
     });
-    env.stored.delete(JEV_KEY_STORAGE);
+    env.stored.set('ttotto.nanogptKey', 'nano-test-key');
     const snapshot = structuredClone(env.context.oaiSettings);
-    const profile = { id: 'nano-jev', api: 'custom', model: 'typesafe/jev-latest', 'api-url': 'https://nano-gpt.com/api/v1', 'secret-id': 'nano-secret' };
-    env.context.ConnectionManagerRequestService = {
-        getSupportedProfiles: () => [profile], validateProfile: () => ({ selected: 'openai', source: 'custom' }),
-        async sendRequest(id, messages, tokens, options, overrides) {
-            assert.equal(id, profile.id);
-            const body = { model: profile.model, secret_id: profile['secret-id'], custom_url: profile['api-url'],
-                chat_completion_source: 'custom', messages, stream: options.stream, ...overrides };
-            // Deliberately model the strongest main-sender stack: the explicit
-            // utility marker must prevent recursive guard/injection regardless.
-            return (await fromMainSender(() => globalThis.fetch(endpoint, { method: 'POST', body: JSON.stringify(body), signal: options.signal }))).json();
-        },
-    };
     try {
         assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(generations, 2);
         assert.equal(env.sent.filter(row => row.body.model === 'typesafe/jev-latest').length, 1);
-        assert.equal(env.sent.filter(row => row.body.model === 'original-main').length, 1);
         assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 통과');
         assert.deepEqual(env.context.oaiSettings, snapshot);
-        assert.equal(env.stored.has(JEV_KEY_STORAGE), false);
+        assert.equal(env.stored.get(JEV_KEY_STORAGE), 'test-only-ttotto-key');
         assert.equal(env.stored.get('hundredlog.typesafeKey'), 'untouched-100log-key');
+    } finally { env.cleanup(); }
+});
+
+test('missing NanoGPT key keeps exact correction and never uses the stored TypeSafe key', async () => {
+    let calls = 0;
+    const env = await setup({ jevProvider: 'nanogpt' }, body => {
+        assert.equal(body.model, 'original-main');
+        return nativeReply(++calls === 1 ? 'His jaw tightened.' : 'He opened the door.');
+    });
+    try {
+        assert.equal((await (await env.send()).json()).choices[0].message.content, 'He opened the door.');
+        assert.equal(calls, 2);
+        assert.equal(env.context.chatMetadata.ttotto.responseGuardReport.stage, '검수 건너뜀 · 마지막 답변 표시');
+    } finally { env.cleanup(); }
+});
+
+test('old Jev profile choice is removed without changing helper profiles or stored keys', async () => {
+    const env = await setup({ jevProfileId: 'old-jev', smartProfileId: 'smart', dragAiProfile: 'drag' });
+    try {
+        const settings = env.context.extensionSettings.ttotto;
+        assert.equal(Object.hasOwn(settings, 'jevProfileId'), false);
+        assert.equal(settings.jevProvider, 'typesafe'); assert.equal(settings.responseGuardEnabled, false);
+        assert.equal(settings.smartProfileId, 'smart'); assert.equal(settings.dragAiProfile, 'drag');
+        assert.equal(env.stored.get(JEV_KEY_STORAGE), 'test-only-ttotto-key');
+    } finally { env.cleanup(); }
+});
+
+test('NanoGPT JEV utility requests bypass main injection even under the main sender stack', async () => {
+    const env = await setup({}, () => nativeReply('untouched'));
+    try {
+        const payload = { ...env.body, type: 'quiet', model: 'typesafe/jev-latest',
+            custom_url: 'https://nano-gpt.com/api/v1/decisions?via=', messages: [{ role: 'user', content: '.' }] };
+        await env.send(payload);
+        assert.equal(env.sent.length, 1);
+        assert.deepEqual(env.sent[0].body, payload);
     } finally { env.cleanup(); }
 });

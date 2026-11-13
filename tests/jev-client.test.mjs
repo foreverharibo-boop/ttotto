@@ -93,82 +93,52 @@ test('missing key sends no request', async () => {
     await assert.rejects(requestJev({}, questions, { ...options, key: '', fetcher: () => assert.fail('must not call') }), /API 키/);
 });
 
-function profileOptions(handler, source = 'custom') {
-    const profile = { id: 'nano-jev', api: 'custom', model: 'typesafe/jev-latest', 'api-url': 'https://nano-gpt.com/api/v1', 'secret-id': 'saved-secret' };
-    return { profileId: profile.id, context: { ConnectionManagerRequestService: {
-        getSupportedProfiles: () => [profile], validateProfile: () => ({ selected: 'openai', source }), sendRequest: handler,
-    } }, fetcher: () => { throw Error('must not fall back to direct'); } };
-}
-
-test('profile JEV sends typed questions without a direct key, preset or main connection changes', async () => {
-    const state = { candidate: 'He left.' }, controller = new AbortController();
-    let calls = 0;
-    const opts = profileOptions(async (id, messages, tokens, custom, overrides) => {
-        calls++;
-        assert.equal(id, 'nano-jev'); assert.equal(tokens, undefined);
-        assert.deepEqual(messages, [{ role: 'user', content: JSON.stringify(state) }]);
-        assert.deepEqual(custom, { stream: false, extractData: false, includePreset: false, includeInstruct: false, signal: controller.signal });
-        assert.deepEqual(JSON.parse(overrides.custom_include_body), { response_format: { type: 'questions', questions } });
-        assert.equal(overrides.type, 'quiet'); assert.equal(overrides.ttotto_jev_request, true);
-        const strip = JSON.parse(overrides.custom_exclude_body);
-        for (const field of ['temperature', 'max_tokens', 'tools', 'reasoning_effort']) assert.ok(strip.includes(field));
-        for (const field of ['messages', 'stream', 'response_format', 'model']) assert.ok(!strip.includes(field));
-        for (const field of ['secret_id', 'model', 'custom_url', 'custom_include_headers']) assert.ok(!Object.hasOwn(overrides, field));
-        return { choices: [{ message: { content: JSON.stringify(await good().json()) } }] };
-    });
-    const profileSnapshot = structuredClone(opts.context.ConnectionManagerRequestService.getSupportedProfiles());
-    const result = await requestJev(state, questions, { ...opts, signal: controller.signal });
-    assert.equal(result.answers.ban_0.choice, 'pass'); assert.equal(calls, 1);
-    assert.deepEqual(opts.context.ConnectionManagerRequestService.getSupportedProfiles(), profileSnapshot);
+const nanoUrl = 'https://nano-gpt.com/api/v1/decisions';
+test('NanoGPT relay sends its direct key and native decisions payload without profiles', async () => {
+    const state = { candidate: 'He left.' };
+    await requestJev(state, questions, { ...options, provider: 'nanogpt', key: 'nano-key', fetcher: async (url, init) => {
+        assert.equal(url, '/api/backends/chat-completions/generate');
+        const body = JSON.parse(init.body);
+        assert.equal(body.custom_url, `${nanoUrl}?via=`); assert.equal(body.model, 'typesafe/jev-latest');
+        assert.equal(body.ttotto_jev_request, true); assert.equal(body.type, 'quiet');
+        assert.deepEqual(JSON.parse(body.custom_include_headers), { Authorization: 'Bearer nano-key' });
+        assert.deepEqual(JSON.parse(body.custom_include_body), { state, questions });
+        assert.equal(body.secret_id, undefined);
+        return good();
+    } });
 });
 
-test('profile answer-map JSON uses the same strict probability validation', async () => {
-    const valid = await good().json();
-    const opts = profileOptions(async () => ({ content: JSON.stringify(valid.answers) }));
-    assert.equal((await requestJev('story', questions, opts)).answers.ban_0.choice, 'pass');
-    valid.answers.ban_0.probabilities.pass = 2;
-    await assert.rejects(requestJev('story', questions, opts), /판정/);
-});
-
-test('missing, native NanoGPT and malformed profiles never fall back to the direct key', async () => {
-    for (const mode of ['missing', 'native', 'no-model']) {
+test('NanoGPT direct/proxy fallback retains the same service and credentials', async () => {
+    for (const proxy of [false, true]) {
         let calls = 0;
-        const opts = profileOptions(async () => { calls++; }, mode === 'native' ? 'nanogpt' : 'custom');
-        opts.key = 'unused-direct-key';
-        if (mode === 'missing') opts.profileId = 'deleted';
-        if (mode === 'no-model') opts.context.ConnectionManagerRequestService.getSupportedProfiles()[0].model = '';
-        await assert.rejects(requestJev({}, questions, opts), /프로필/);
-        assert.equal(calls, 0);
+        await requestJev('story', questions, { ...options, provider: 'nanogpt', key: 'nano-key', fetcher: async (url, init) => {
+            if (++calls === 1) return new Response('', { status: 404 });
+            if (calls === 2 && proxy) throw Error('CORS');
+            assert.equal(url, proxy ? `/proxy/${encodeURIComponent(nanoUrl)}` : nanoUrl);
+            assert.equal(init.headers.Authorization, 'Bearer nano-key');
+            assert.deepEqual(JSON.parse(init.body), { model: 'typesafe/jev-latest', state: 'story', questions });
+            return good();
+        } });
+        assert.equal(calls, proxy ? 3 : 2);
     }
 });
 
-test('profile rejects prose, incomplete answers and malformed probabilities', async () => {
-    for (const content of ['not JSON', '{}', '{"answers":{}}']) {
-        await assert.rejects(requestJev({}, questions, profileOptions(async () => ({ choices: [{ message: { content } }] }))), /판정/);
-    }
-});
-
-test('profile wrapped authentication errors stay private and do not retry', async () => {
+test('NanoGPT authentication failure never switches to TypeSafe or exposes raw error content', async () => {
     let calls = 0;
-    const opts = profileOptions(async () => { calls++; throw new Error('API request failed', { cause: new Error('401 secret-key private-story') }); });
-    await assert.rejects(requestJev({}, questions, opts), error => {
-        assert.match(error.message, /인증/); assert.doesNotMatch(error.message, /secret-key|private-story/); return true;
-    });
+    await assert.rejects(requestJev({}, questions, { ...options, provider: 'nanogpt', fetcher: async () => {
+        calls++; return new Response('private-story-and-key', { status: 401 });
+    } }), error => /인증/.test(error.message) && !/private/.test(error.message));
     assert.equal(calls, 1);
 });
 
-test('profile wrapped 429 retries within the existing retry policy', async () => {
+test('NanoGPT retries freeze the selected service and key even if caller options change', async () => {
     let calls = 0;
-    const opts = profileOptions(async () => {
-        if (++calls === 1) throw new Error('API request failed', { cause: new Error('429 rate limit') });
-        return good().json();
-    });
-    assert.equal((await requestJev({}, questions, opts)).answers.ban_0.choice, 'pass');
-    assert.equal(calls, 2);
-});
-
-test('profile cancellation discards late results', async () => {
-    const controller = new AbortController();
-    const opts = profileOptions(async () => { controller.abort(); return good().json(); });
-    await assert.rejects(requestJev({}, questions, { ...opts, signal: controller.signal }), error => error.name === 'AbortError');
+    const opts = { ...options, provider: 'nanogpt', key: 'nano-key', fetcher: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.custom_url, `${nanoUrl}?via=`);
+        assert.equal(JSON.parse(body.custom_include_headers).Authorization, 'Bearer nano-key');
+        if (++calls === 1) { opts.provider = 'typesafe'; opts.key = 'other-key'; return new Response('', { status: 429 }); }
+        return good();
+    } };
+    await requestJev({}, questions, opts); assert.equal(calls, 2);
 });
